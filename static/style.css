@@ -9,6 +9,10 @@ body {
   color: #1f2937;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 .auth-screen {
   min-height: 100vh;
   display: flex;
@@ -53,22 +57,9 @@ body {
   justify-content: center;
 }
 
-.auth-switch {
-  padding: 0.55rem 1.1rem;
-  border-radius: 999px;
-  border: 1px solid #cbd5f5;
-  background: #eef2ff;
-  color: #1d4ed8;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.auth-switch:hover,
-.auth-switch.active {
-  background: #1d4ed8;
-  color: white;
-  border-color: #1d4ed8;
+.auth-menu {
+  display: grid;
+  gap: 1rem;
 }
 
 .auth-form {
@@ -152,6 +143,51 @@ header .header-row {
   opacity: 0.65;
 }
 
+.invite-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  z-index: 1000;
+}
+
+.invite-overlay[hidden] {
+  display: none;
+}
+
+.invite-dialog {
+  background: white;
+  padding: 2rem;
+  border-radius: 1.25rem;
+  max-width: 520px;
+  width: 100%;
+  display: grid;
+  gap: 1.25rem;
+  text-align: center;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
+}
+
+.invite-overlay-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.invite-link-code {
+  display: block;
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+  font-size: 0.95rem;
+  word-break: break-all;
+}
+
 .about-content {
   background: white;
   padding: 2rem;
@@ -193,6 +229,18 @@ header .header-row {
 .about-content dd {
   margin: 0.25rem 0 0 0;
   color: #334155;
+}
+
+.admin-invite-card .invite-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.admin-invite-card .invite-warning {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #b91c1c;
 }
 
 header h1 {

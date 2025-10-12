@@ -11,10 +11,10 @@
     <div class="auth-card">
       <h1>Dorm Expense Tracker</h1>
       <p class="auth-subtitle">Sign in or create an admin account to manage dorm expenses.</p>
-      <div class="auth-switcher" role="tablist" aria-label="Authentication options">
-        <button type="button" class="auth-switch" data-view="login-admin">Admin Login</button>
-        <button type="button" class="auth-switch" data-view="login-renter">Renter Login</button>
-        <button type="button" class="auth-switch" data-view="register-admin">Register Admin</button>
+      <div id="auth-menu" class="auth-menu" data-view="menu">
+        <button type="button" class="primary auth-menu-btn" data-target="login-admin">Log In as Admin</button>
+        <button type="button" class="primary auth-menu-btn" data-target="login-renter">Log In as Renter</button>
+        <button type="button" class="secondary auth-menu-btn" data-target="register-admin">Register Admin Account</button>
       </div>
 
       <form id="login-admin-form" class="auth-form" data-view="login-admin" hidden>
@@ -92,8 +92,6 @@
         <h1>Dorm Expense Tracker</h1>
         <div class="user-bar" id="user-bar" hidden>
           <span id="user-info"></span>
-          <button type="button" class="secondary" id="copy-invite-btn" hidden>Copy Invite Link</button>
-          <span class="invite-hint" id="invite-hint" hidden>Invite link copied!</span>
           <button type="button" class="secondary" id="logout-btn">Log out</button>
         </div>
       </div>
@@ -474,6 +472,18 @@
 
     <section class="tab-panel" id="admin-panel" role="tabpanel" aria-labelledby="tab-admin" hidden>
       <div class="admin-grid">
+        <div class="admin-card admin-invite-card" id="admin-invite-card" hidden>
+          <h2>Renter Invite Link</h2>
+          <p class="panel-helper">Share this private link with renters so they can create their own accounts for this dorm.</p>
+          <code id="admin-invite-link" class="invite-link-code"></code>
+          <div class="invite-actions">
+            <button type="button" class="secondary" id="admin-copy-invite">Copy Invite Link</button>
+            <button type="button" class="secondary" id="admin-rotate-invite">Rotate Link</button>
+          </div>
+          <p class="invite-hint" id="admin-invite-feedback" hidden></p>
+          <p class="invite-warning">Rotating the link instantly invalidates older invites.</p>
+        </div>
+
         <div class="admin-card">
           <h2>Billing Period</h2>
           <p class="panel-helper">Pick the start and end dates for the billing cycle.</p>
@@ -518,6 +528,19 @@
       </div>
     </section>
   </main>
+
+  <div id="invite-overlay" class="invite-overlay" hidden>
+    <div class="invite-dialog">
+      <h2>Your Renter Invite Link</h2>
+      <p>Share this link with your renters so they can register. Keep it private—anyone with the link can join your dorm workspace.</p>
+      <code id="invite-overlay-link" class="invite-link-code"></code>
+      <p class="invite-hint" id="invite-overlay-feedback" hidden></p>
+      <div class="invite-overlay-actions">
+        <button type="button" class="secondary" id="invite-overlay-copy">Copy Invite Link</button>
+        <button type="button" class="primary" id="invite-overlay-continue">Continue to Dashboard</button>
+      </div>
+    </div>
+  </div>
 
   <template id="user-row-template">
     <tr>

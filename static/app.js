@@ -203,7 +203,8 @@ const elements = {
   auth: {
     screen: document.getElementById("auth-screen"),
     message: document.getElementById("auth-message"),
-    switchButtons: Array.from(document.querySelectorAll(".auth-switch")),
+    menu: document.getElementById("auth-menu"),
+    menuButtons: Array.from(document.querySelectorAll(".auth-menu-btn")),
     backButtons: Array.from(document.querySelectorAll(".auth-back")),
     forms: {
       loginAdmin: document.getElementById("login-admin-form"),
@@ -222,13 +223,17 @@ const elements = {
       registerAdminUsername: document.getElementById("register-admin-username"),
       registerAdminPassword: document.getElementById("register-admin-password"),
     },
+    overlay: {
+      container: document.getElementById("invite-overlay"),
+      link: document.getElementById("invite-overlay-link"),
+      copyBtn: document.getElementById("invite-overlay-copy"),
+      continueBtn: document.getElementById("invite-overlay-continue"),
+    },
   },
   userBar: {
     container: document.getElementById("user-bar"),
     info: document.getElementById("user-info"),
     logout: document.getElementById("logout-btn"),
-    copyInvite: document.getElementById("copy-invite-btn"),
-    inviteHint: document.getElementById("invite-hint"),
   },
   form: document.getElementById("add-user-form"),
   adminForm: document.getElementById("admin-form"),
@@ -247,6 +252,12 @@ const elements = {
   },
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   tabPanels: Array.from(document.querySelectorAll(".tab-panel")),
+  adminInvite: {
+    card: document.getElementById("admin-invite-card"),
+    link: document.getElementById("admin-invite-link"),
+    copyBtn: document.getElementById("admin-copy-invite"),
+    rotateBtn: document.getElementById("admin-rotate-invite"),
+  },
   away: {
     select: document.getElementById("out-user-select"),
     addForm: document.getElementById("add-out-form"),
@@ -366,14 +377,13 @@ const resetAuthForms = () => {
 };
 
 const setAuthView = (view, options = {}) => {
-  currentAuthView = view;
+  const targetView = view || "menu";
+  currentAuthView = targetView;
   const forms = elements.auth.forms;
-  const switches = elements.auth.switchButtons;
-  if (switches) {
-    switches.forEach((button) => {
-      const isMatch = button.dataset.view === view;
-      button.classList.toggle("active", isMatch);
-    });
+  const menu = elements.auth.menu;
+
+  if (menu) {
+    menu.hidden = targetView !== "menu";
   }
 
   showAuthMessage("");
@@ -386,7 +396,7 @@ const setAuthView = (view, options = {}) => {
     if (!form) {
       return;
     }
-    const isMatch = form.dataset.view === view;
+    const isMatch = form.dataset.view === targetView;
     if (isMatch && !options.preserveValues) {
       form.reset();
     } else if (!isMatch && options.resetHidden) {
@@ -408,24 +418,67 @@ const setAuthView = (view, options = {}) => {
 const buildInviteLink = (token) =>
   `${window.location.origin}${window.location.pathname}?invite=${token}`;
 
-const showInviteHint = (message, isError = false) => {
-  const hint = elements.userBar.inviteHint;
-  if (!hint) {
+const setInviteFeedback = (message, { target = "auto", error = false } = {}) => {
+  const overlay = elements.auth.overlay;
+  const overlayFeedback = overlay?.feedback;
+  const adminFeedback = document.getElementById("admin-invite-feedback");
+
+  const applyMessage = (element) => {
+    if (!element) {
+      return false;
+    }
+    element.textContent = message;
+    element.hidden = !message;
+    element.classList.toggle("error", error);
+    return true;
+  };
+
+  if (!message) {
+    if (overlayFeedback) {
+      overlayFeedback.hidden = true;
+      overlayFeedback.classList.remove("error");
+    }
+    if (adminFeedback) {
+      adminFeedback.hidden = true;
+      adminFeedback.classList.remove("error");
+    }
+    if (inviteHintTimeoutId) {
+      clearTimeout(inviteHintTimeoutId);
+      inviteHintTimeoutId = null;
+    }
     return;
   }
-  hint.textContent = message;
-  hint.hidden = !message;
-  hint.classList.toggle("error", isError);
+
+  let handled = false;
+  if (target === "overlay" || (target === "auto" && overlay && overlay.container && !overlay.container.hidden)) {
+    handled = applyMessage(overlayFeedback);
+  }
+  if (!handled && (target === "admin" || target === "auto")) {
+    handled = applyMessage(adminFeedback);
+  }
+
+  if (!handled && target === "overlay") {
+    applyMessage(overlayFeedback);
+  }
+
+  if (!handled && target === "admin") {
+    applyMessage(adminFeedback);
+  }
+
   if (inviteHintTimeoutId) {
     clearTimeout(inviteHintTimeoutId);
   }
-  if (message) {
-    inviteHintTimeoutId = setTimeout(() => {
-      hint.hidden = true;
-      hint.classList.remove("error");
-      inviteHintTimeoutId = null;
-    }, 4000);
-  }
+  inviteHintTimeoutId = setTimeout(() => {
+    if (overlayFeedback) {
+      overlayFeedback.hidden = true;
+      overlayFeedback.classList.remove("error");
+    }
+    if (adminFeedback) {
+      adminFeedback.hidden = true;
+      adminFeedback.classList.remove("error");
+    }
+    inviteHintTimeoutId = null;
+  }, 4000);
 };
 
 const updateUserBar = () => {
@@ -442,20 +495,9 @@ const updateUserBar = () => {
   if (elements.userBar.info) {
     elements.userBar.info.textContent = `${account.username} (${account.role})`;
   }
-  if (elements.userBar.copyInvite) {
-    const hasToken = account.role === "admin" && sessionState.inviteToken;
-    elements.userBar.copyInvite.hidden = !hasToken;
-    if (hasToken) {
-      elements.userBar.copyInvite.dataset.inviteLink = buildInviteLink(sessionState.inviteToken);
-    }
-  }
-  if (elements.userBar.inviteHint) {
-    elements.userBar.inviteHint.hidden = true;
-    elements.userBar.inviteHint.classList.remove("error");
-  }
 };
 
-const copyInviteLink = async () => {
+const copyInviteLink = async ({ target = "auto" } = {}) => {
   if (sessionState.account?.role !== "admin" || !sessionState.inviteToken) {
     return;
   }
@@ -474,11 +516,51 @@ const copyInviteLink = async () => {
       document.execCommand("copy");
       document.body.removeChild(textarea);
     }
-    showInviteHint("Invite link copied!");
+    setInviteFeedback("Invite link copied!", { target });
   } catch (error) {
     console.error("Failed to copy invite link:", error);
-    showInviteHint("Unable to copy invite link.", true);
+    setInviteFeedback("Unable to copy invite link.", { target, error: true });
   }
+};
+
+const rotateInviteLink = async () => {
+  if (sessionState.account?.role !== "admin") {
+    return;
+  }
+  try {
+    const result = await request("/api/auth/invite/rotate", { method: "POST" });
+    sessionState.inviteToken = result.invite_token;
+    updateAdminInviteCard();
+    setInviteFeedback("New invite link generated.", { target: "admin" });
+  } catch (error) {
+    console.error("Failed to rotate invite link:", error);
+    setInviteFeedback(error.message || "Unable to rotate invite link.", { target: "admin", error: true });
+  }
+};
+
+const showInviteOverlay = () => {
+  const overlay = elements.auth.overlay;
+  if (!overlay?.container || !sessionState.inviteToken) {
+    return;
+  }
+  overlay.link.textContent = buildInviteLink(sessionState.inviteToken);
+  overlay.container.hidden = false;
+  document.body.classList.add("modal-open");
+  setInviteFeedback("", { target: "overlay" });
+};
+
+const hideInviteOverlay = async () => {
+  const overlay = elements.auth.overlay;
+  if (!overlay?.container) {
+    return;
+  }
+  overlay.container.hidden = true;
+  document.body.classList.remove("modal-open");
+  setInviteFeedback("", { target: "overlay" });
+  resetAuthForms();
+  currentAuthView = null;
+  inviteTokenFromQuery = null;
+  await loadState();
 };
 
 const logout = async () => {
@@ -553,6 +635,23 @@ const applyRolePermissions = () => {
   }
 };
 
+const updateAdminInviteCard = () => {
+  const { card, link } = elements.adminInvite;
+  if (!card || !link) {
+    return;
+  }
+
+  const isAdmin = sessionState.authenticated && sessionState.account?.role === "admin";
+  if (!isAdmin || !sessionState.inviteToken) {
+    card.hidden = true;
+    setInviteFeedback("", { target: "admin" });
+    return;
+  }
+
+  card.hidden = false;
+  link.textContent = buildInviteLink(sessionState.inviteToken);
+};
+
 const updateUIForSession = () => {
   const authed = sessionState.authenticated;
   if (elements.auth.screen) {
@@ -563,13 +662,14 @@ const updateUIForSession = () => {
   }
   updateUserBar();
   applyRolePermissions();
+  updateAdminInviteCard();
 
   if (!authed) {
-    if (!currentAuthView) {
-      setAuthView("login-admin");
-    } else {
-      setAuthView(currentAuthView, { preserveValues: true, skipFocus: true });
-    }
+    const defaultView = inviteTokenFromQuery ? "register-renter" : "menu";
+    const viewToUse = currentAuthView || defaultView;
+    setAuthView(viewToUse, { preserveValues: true, skipFocus: true });
+  } else {
+    currentAuthView = null;
   }
 };
 
@@ -1667,14 +1767,14 @@ const render = () => {
   applyRolePermissions();
 };
 
-if (elements.auth.switchButtons?.length) {
-  elements.auth.switchButtons.forEach((button) => {
+if (elements.auth.menuButtons?.length) {
+  elements.auth.menuButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      const view = button.dataset.view;
+      const view = button.dataset.target;
       if (!view) {
         return;
       }
-      setAuthView(view);
+      setAuthView(view, { resetHidden: true });
       if (view === "register-renter" && inviteTokenFromQuery && elements.auth.inputs.renterToken) {
         elements.auth.inputs.renterToken.value = inviteTokenFromQuery;
       }
@@ -1685,7 +1785,8 @@ if (elements.auth.switchButtons?.length) {
 if (elements.auth.backButtons?.length) {
   elements.auth.backButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      setAuthView(null, { skipFocus: true });
+      showAuthMessage("");
+      setAuthView("menu", { skipFocus: true, resetHidden: true });
     });
   });
 }
@@ -1696,6 +1797,7 @@ const handleAuthRequest = async ({
   submitButton,
   onSuccess,
   loadingText,
+  deferPostAuth = false,
 }) => {
   const originalText = submitButton?.textContent;
   if (submitButton) {
@@ -1711,20 +1813,28 @@ const handleAuthRequest = async ({
     });
     const authenticated = await refreshSession();
     if (authenticated) {
-      resetAuthForms();
-      currentAuthView = null;
-      showAuthMessage("");
-      inviteTokenFromQuery = null;
-      if (typeof onSuccess === "function") {
-        onSuccess();
+      if (deferPostAuth) {
+        if (typeof onSuccess === "function") {
+          onSuccess();
+        }
+      } else {
+        resetAuthForms();
+        currentAuthView = null;
+        showAuthMessage("");
+        inviteTokenFromQuery = null;
+        if (typeof onSuccess === "function") {
+          onSuccess();
+        }
+        await loadState();
       }
-      await loadState();
     }
   } catch (error) {
     console.error(`Authentication request failed for ${endpoint}:`, error);
     showAuthMessage(error.message || "Request failed.");
     if (payload.token) {
       setAuthView("register-renter", { preserveValues: true, skipFocus: true });
+    } else if (payload.username && endpoint.includes("register")) {
+      setAuthView("register-admin", { preserveValues: true, skipFocus: true });
     }
   } finally {
     if (submitButton) {
@@ -1796,8 +1906,9 @@ if (elements.auth.forms?.registerAdmin) {
       submitButton,
       loadingText: "Registering...",
       onSuccess: () => {
-        showInviteHint("Invite link ready to copy!");
+        showInviteOverlay();
       },
+      deferPostAuth: true,
     });
   });
 }
@@ -1828,13 +1939,34 @@ if (elements.auth.forms?.registerRenter) {
 if (elements.userBar.logout) {
   elements.userBar.logout.addEventListener("click", async () => {
     await logout();
-    showInviteHint("");
+    setInviteFeedback("", { target: "admin" });
+    setInviteFeedback("", { target: "overlay" });
   });
 }
 
-if (elements.userBar.copyInvite) {
-  elements.userBar.copyInvite.addEventListener("click", () => {
-    copyInviteLink();
+if (elements.adminInvite.copyBtn) {
+  elements.adminInvite.copyBtn.addEventListener("click", () => {
+    copyInviteLink({ target: "admin" });
+  });
+}
+
+if (elements.adminInvite.rotateBtn) {
+  elements.adminInvite.rotateBtn.addEventListener("click", () => {
+    rotateInviteLink();
+  });
+}
+
+if (elements.auth.overlay?.copyBtn) {
+  elements.auth.overlay.copyBtn.addEventListener("click", () => {
+    copyInviteLink({ target: "overlay" });
+  });
+}
+
+if (elements.auth.overlay?.continueBtn) {
+  elements.auth.overlay.continueBtn.addEventListener("click", () => {
+    hideInviteOverlay().catch((error) => {
+      console.error("Failed to close invite overlay:", error);
+    });
   });
 }
 
@@ -2344,13 +2476,14 @@ const initializeApp = async () => {
   const inviteParam = params.get("invite");
   if (inviteParam) {
     inviteTokenFromQuery = inviteParam;
-    currentAuthView = "register-renter";
     if (elements.auth.inputs.renterToken) {
       elements.auth.inputs.renterToken.value = inviteParam;
     }
     window.history.replaceState({}, document.title, window.location.pathname);
-  } else if (!currentAuthView) {
-    currentAuthView = "login-admin";
+  }
+
+  if (!currentAuthView) {
+    currentAuthView = inviteTokenFromQuery ? "register-renter" : "menu";
   }
 
   const authenticated = await refreshSession();
@@ -2362,7 +2495,7 @@ const initializeApp = async () => {
       elements.auth.inputs.renterToken.value = inviteTokenFromQuery;
     }
   } else {
-    setAuthView("login-admin");
+    setAuthView("menu", { skipFocus: true });
   }
 };
 
