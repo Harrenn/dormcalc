@@ -1,0 +1,4 @@
+uploads/
+myenv/
+__pycache__/
+*.py[cod]

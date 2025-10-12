@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dorm Expense Tracker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <h1>Dorm Expense Tracker</h1>
+      <p class="auth-subtitle">Sign in or create an admin account to manage dorm expenses.</p>
+      <div class="auth-switcher" role="tablist" aria-label="Authentication options">
+        <button type="button" class="auth-switch" data-view="login-admin">Admin Login</button>
+        <button type="button" class="auth-switch" data-view="login-renter">Renter Login</button>
+        <button type="button" class="auth-switch" data-view="register-admin">Register Admin</button>
+      </div>
+
+      <form id="login-admin-form" class="auth-form" data-view="login-admin" hidden>
+        <div class="form-row">
+          <label for="login-admin-username">Username</label>
+          <input id="login-admin-username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="form-row">
+          <label for="login-admin-password">Password</label>
+          <input id="login-admin-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="auth-actions">
+          <button type="submit" class="primary">Log In</button>
+          <button type="button" class="secondary auth-back">Back</button>
+        </div>
+      </form>
+
+      <form id="login-renter-form" class="auth-form" data-view="login-renter" hidden>
+        <div class="form-row">
+          <label for="login-renter-username">Username</label>
+          <input id="login-renter-username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="form-row">
+          <label for="login-renter-password">Password</label>
+          <input id="login-renter-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="auth-actions">
+          <button type="submit" class="primary">Log In</button>
+          <button type="button" class="secondary auth-back">Back</button>
+        </div>
+      </form>
+
+      <form id="register-admin-form" class="auth-form" data-view="register-admin" hidden>
+        <div class="form-row">
+          <label for="register-admin-username">Username</label>
+          <input id="register-admin-username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="form-row">
+          <label for="register-admin-password">Password</label>
+          <input id="register-admin-password" name="password" type="password" autocomplete="new-password" required>
+        </div>
+        <div class="auth-actions">
+          <button type="submit" class="primary">Register</button>
+          <button type="button" class="secondary auth-back">Back</button>
+        </div>
+      </form>
+
+      <form id="register-renter-form" class="auth-form" data-view="register-renter" hidden>
+        <div class="form-row">
+          <label for="register-renter-token">Invite token</label>
+          <input id="register-renter-token" name="token" type="text" autocomplete="off" required>
+        </div>
+        <div class="form-row">
+          <label for="register-renter-username">Username</label>
+          <input id="register-renter-username" name="username" type="text" autocomplete="username" required>
+        </div>
+        <div class="form-row">
+          <label for="register-renter-password">Password</label>
+          <input id="register-renter-password" name="password" type="password" autocomplete="new-password" required>
+        </div>
+        <div class="auth-actions">
+          <button type="submit" class="primary">Create Renter Account</button>
+          <button type="button" class="secondary auth-back">Back</button>
+        </div>
+      </form>
+
+      <p class="auth-hint">Have a renter invite link? Open it to prefill the invite token automatically.</p>
+      <p class="auth-message" id="auth-message" hidden></p>
+    </div>
+  </div>
+
+  <main class="app" id="app-root" hidden>
+    <header>
+      <div class="header-row">
+        <h1>Dorm Expense Tracker</h1>
+        <div class="user-bar" id="user-bar" hidden>
+          <span id="user-info"></span>
+          <button type="button" class="secondary" id="copy-invite-btn" hidden>Copy Invite Link</button>
+          <span class="invite-hint" id="invite-hint" hidden>Invite link copied!</span>
+          <button type="button" class="secondary" id="logout-btn">Log out</button>
+        </div>
+      </div>
+      <p class="tagline">Track water, electric, internet, and abono adjustments per resident.</p>
+      <p class="period" id="billing-period"></p>
+    </header>
+
+    <section class="totals" aria-live="polite">
+      <h2>Totals</h2>
+      <div class="total-grid">
+        <div class="total-card">
+          <span class="label">Water</span>
+          <span class="value" id="total-water">$0.00</span>
+        </div>
+        <div class="total-card">
+          <span class="label">Electric</span>
+          <span class="value" id="total-electric">$0.00</span>
+        </div>
+        <div class="total-card">
+          <span class="label">Internet</span>
+          <span class="value" id="total-internet">$0.00</span>
+        </div>
+        <div class="total-card">
+          <span class="label">Rent</span>
+          <span class="value" id="total-rent">$0.00</span>
+        </div>
+        <div class="total-card">
+          <span class="label">Abono (General)</span>
+          <span class="value" id="total-abono-general">$0.00</span>
+        </div>
+        <div class="total-card">
+          <span class="label">Abono (Mineral)</span>
+          <span class="value" id="total-abono-mineral">$0.00</span>
+        </div>
+        <div class="total-card total-card--full">
+          <span class="label">Grand Total</span>
+          <span class="value" id="grand-total">$0.00</span>
+        </div>
+      </div>
+    </section>
+
+    <nav class="tabs" role="tablist" aria-label="Dorm tracker sections">
+      <button class="tab-button active" role="tab" aria-selected="true" aria-controls="residents-panel" id="tab-residents">
+        Residents
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="away-panel" id="tab-away">
+        Time Away
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="abono-panel" id="tab-abono">
+        Abono
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="fixed-panel" id="tab-fixed">
+        Fixed
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="checking-panel" id="tab-checking">
+        Checking
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="admin-panel" id="tab-admin">
+        Admin
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="about-panel" id="tab-about">
+        About
+      </button>
+    </nav>
+
+    <section class="tab-panel" id="residents-panel" role="tabpanel" aria-labelledby="tab-residents">
+      <div class="controls">
+        <h2>Add Resident</h2>
+        <form id="add-user-form">
+          <div class="form-row">
+            <label for="name">Name</label>
+            <input id="name" name="name" type="text" placeholder="e.g., Alex" required>
+          </div>
+          <button type="submit" class="primary">Add Resident</button>
+        </form>
+      </div>
+
+      <section aria-label="Resident breakdown">
+        <h2>Residents</h2>
+        <div class="table-wrapper">
+          <table aria-live="polite">
+            <thead>
+              <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Days</th>
+              <th scope="col">Water</th>
+              <th scope="col">Electric</th>
+                <th scope="col">Internet</th>
+                <th scope="col">Rent</th>
+                <th scope="col">Total Charges</th>
+              <th scope="col">Abono</th>
+              <th scope="col">Mineral Abono</th>
+              <th scope="col">Amount Due</th>
+              <th scope="col" class="actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="user-table-body"></tbody>
+        </table>
+      </div>
+      </section>
+    </section>
+
+    <section class="tab-panel" id="about-panel" role="tabpanel" aria-labelledby="tab-about" hidden>
+      <article class="about-content">
+        <h2>About Dorm Expense Tracker</h2>
+        <p>This workspace keeps each dorm admin’s data separate and splits common costs fairly among residents. Use this guide to understand the roles, tabs, and bill calculation rules.</p>
+
+        <section>
+          <h3>User Roles &amp; Access</h3>
+          <ul>
+            <li><strong>Admin</strong> – registers the dorm, manages residents, expenses, fixed utilities, billing periods, and can delete data.</li>
+            <li><strong>Renter</strong> – logs in from the admin’s invite link; can review totals, upload receipts, and adjust their own abono credits but cannot change shared settings.</li>
+          </ul>
+          <p>Admins can invite renters by copying the link in the header; renters enter that invite token during “Create Renter Account”.</p>
+        </section>
+
+        <section>
+          <h3>Tabs Overview</h3>
+          <dl>
+            <dt>Residents</dt>
+            <dd>Track each resident’s days present, per-utility share, rent portion, abono credits, and final balance. Expand a row to see the detailed formula used.</dd>
+            <dt>Time Away</dt>
+            <dd>Admins record when a resident stayed out. Days away reduce that resident’s variable share for water, electric, and internet.</dd>
+            <dt>Abono</dt>
+            <dd>Admins and renters can enter general abono (shared purchases) and mineral abono credits and upload supporting receipts.</dd>
+            <dt>Fixed</dt>
+            <dd>Admins define fixed-cost appliances or services (e.g., internet modem, refrigerator) that every tenant splits equally before daily usage is calculated.</dd>
+            <dt>Checking</dt>
+            <dd>Shows whether totals balance, compares resident dues vs. grand total, and highlights mismatch messages so you can correct entries.</dd>
+            <dt>Admin</dt>
+            <dd>Admins set the billing period (defaults to 15th of last month – 14th of current) and input monthly expenses for water, electric, internet, and rent.</dd>
+          </dl>
+        </section>
+
+        <section>
+          <h3>Billing Logic</h3>
+          <ul>
+            <li>Fixed charges are split equally among all residents.</li>
+            <li>Remaining (variable) utility amounts are prorated by the number of days a resident was present in the billing period.</li>
+            <li>Rent is divided evenly across residents.</li>
+            <li>Abono credits (general + mineral) are subtracted from each resident’s gross total.</li>
+            <li>The Checking tab confirms totals minus credits equal what residents owe.</li>
+          </ul>
+        </section>
+
+        <section>
+          <h3>Workflow Tips</h3>
+          <ol>
+            <li>Register or log in as admin, invite renters via the header button.</li>
+            <li>Add residents, record their away dates, and enter utilities, rent, fixed costs, and abono credits.</li>
+            <li>Have renters log in, upload receipts, and confirm their balances.</li>
+            <li>Use the Checking tab to ensure the period balances before collecting payments.</li>
+          </ol>
+        </section>
+      </article>
+    </section>
+
+    <section class="tab-panel" id="away-panel" role="tabpanel" aria-labelledby="tab-away" hidden>
+      <div class="records-header">
+        <h2>Time Away</h2>
+        <div class="record-selector">
+          <label for="out-user-select">Manage time away for</label>
+          <select id="out-user-select"></select>
+        </div>
+      </div>
+
+      <p class="panel-helper">Log when residents were out of the dorm so their bill shares stay fair.</p>
+
+      <div class="records-grid">
+        <form id="add-out-form" class="record-form">
+          <div class="form-row">
+            <label for="out-start">Away start</label>
+            <input id="out-start" name="start" type="date" required>
+          </div>
+          <div class="form-row">
+            <label for="out-end">Away end</label>
+            <input id="out-end" name="end" type="date" required>
+          </div>
+          <button type="submit" class="primary">Add Away Period</button>
+        </form>
+
+        <div class="table-wrapper">
+          <table aria-live="polite">
+            <thead>
+              <tr>
+                <th scope="col">Start</th>
+                <th scope="col">End</th>
+                <th scope="col">Days Out</th>
+                <th scope="col" class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="out-table-body"></tbody>
+          </table>
+          <p class="empty-state" id="out-empty" hidden>No time away recorded for this resident.</p>
+        </div>
+
+      </div>
+    </section>
+
+    <section class="tab-panel" id="abono-panel" role="tabpanel" aria-labelledby="tab-abono" hidden>
+      <div class="records-header">
+        <h2>Abono Management</h2>
+        <div class="record-selector">
+          <label for="abono-user-select">Review abono for</label>
+          <select id="abono-user-select"></select>
+        </div>
+      </div>
+
+      <p class="panel-helper">Track how much each resident has already paid and store their receipts for transparency.</p>
+
+      <div class="detail-card abono-card">
+        <div class="detail-grid">
+          <section class="detail-section breakdown-section">
+            <h3>Abono Overview</h3>
+            <dl class="breakdown-list">
+              <div>
+                <dt>Utilities Share</dt>
+                <dd id="abono-summary-total">₱0.00</dd>
+              </div>
+              <div>
+                <dt>Abono Credit</dt>
+                <dd id="abono-summary-credit">₱0.00</dd>
+              </div>
+              <div>
+                <dt>Mineral Abono</dt>
+                <dd id="abono-summary-mineral">₱0.00</dd>
+              </div>
+              <div>
+                <dt>Rent Share</dt>
+                <dd id="abono-summary-rent">₱0.00</dd>
+              </div>
+              <div>
+                <dt>Amount Due</dt>
+                <dd id="abono-summary-due">₱0.00</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="detail-section credit-section">
+            <h3>Set Abono</h3>
+            <form id="abono-credit-form" class="record-form credit-form">
+              <div class="form-row">
+                <label for="abono-credit-input">Abono amount</label>
+                <input id="abono-credit-input" name="various_credit" type="number" min="0" step="0.01">
+              </div>
+              <button type="submit" class="primary">Save Abono</button>
+              <p class="credit-hint">Record how much this resident already paid so it’s deducted from their total.</p>
+            </form>
+            <form id="mineral-credit-form" class="record-form credit-form">
+              <div class="form-row">
+                <label for="mineral-credit-input">Mineral abono amount</label>
+                <input id="mineral-credit-input" name="mineral_credit" type="number" min="0" step="0.01">
+              </div>
+              <button type="submit" class="primary">Save Mineral Abono</button>
+              <p class="credit-hint">Track prepaid mineral water contributions.</p>
+            </form>
+          </section>
+
+          <section class="detail-section receipts-section">
+            <h3>Abono Receipts</h3>
+            <ul class="receipt-list" id="abono-receipt-list" aria-live="polite"></ul>
+            <p class="receipt-hint" id="abono-receipts-empty" hidden>No receipts uploaded yet.</p>
+            <form id="abono-upload-form" class="receipt-upload" enctype="multipart/form-data">
+              <label class="file-label">Upload receipt (optional)</label>
+              <input id="abono-receipt-file" class="receipt-file" name="file" type="file" accept="image/*,.pdf">
+              <button type="submit" class="primary">Upload</button>
+              <p class="receipt-hint">Upload a photo or PDF to back up this abono.</p>
+            </form>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="fixed-panel" role="tabpanel" aria-labelledby="tab-fixed" hidden>
+      <div class="records-header">
+        <h2>Fixed Utilities</h2>
+      </div>
+
+      <p class="panel-helper">Add costs that stay constant each billing period. These are split equally among all residents before daily usage totals are calculated.</p>
+
+      <div class="fixed-grid">
+        <form id="fixed-form" class="record-form">
+          <div class="form-row">
+            <label for="fixed-name">Name</label>
+            <input id="fixed-name" name="name" type="text" placeholder="e.g., Internet" required>
+          </div>
+          <div class="form-row">
+            <label for="fixed-category">Category</label>
+            <select id="fixed-category" name="category" required>
+              <option value="">Select category</option>
+              <option value="water">Water</option>
+              <option value="electric">Electric</option>
+              <option value="internet">Internet</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="fixed-amount">Amount</label>
+            <input id="fixed-amount" name="amount" type="number" min="0" step="0.01" required>
+          </div>
+          <button type="submit" class="primary">Add Fixed Item</button>
+        </form>
+
+        <div class="table-wrapper">
+          <table aria-live="polite">
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Category</th>
+                <th scope="col">Amount</th>
+                <th scope="col" class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="fixed-table-body"></tbody>
+          </table>
+          <p class="empty-state" id="fixed-empty" hidden>No fixed utilities added yet.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="checking-panel" role="tabpanel" aria-labelledby="tab-checking" hidden>
+      <div class="checking-grid">
+        <div class="detail-card checking-card">
+          <h2>Balance Summary</h2>
+          <dl class="breakdown-list">
+            <div>
+              <dt>Utilities Total</dt>
+              <dd id="checking-utilities">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Rent Total</dt>
+              <dd id="checking-rent">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Fixed Utilities</dt>
+              <dd id="checking-fixed">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Abono (General)</dt>
+              <dd id="checking-abono-general">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Abono (Mineral)</dt>
+              <dd id="checking-abono-mineral">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Grand Total Due</dt>
+              <dd id="checking-grand">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Total Amount Due (Residents)</dt>
+              <dd id="checking-resident-total">₱0.00</dd>
+            </div>
+            <div>
+              <dt>Balance Difference</dt>
+              <dd id="checking-difference">₱0.00</dd>
+            </div>
+          </dl>
+          <p id="checking-status" class="checking-status">All values pending.</p>
+        </div>
+
+        <div class="table-wrapper">
+          <table aria-live="polite">
+            <thead>
+              <tr>
+                <th scope="col">Resident</th>
+                <th scope="col">Utilities</th>
+                <th scope="col">Rent</th>
+                <th scope="col">Abono</th>
+                <th scope="col">Mineral Abono</th>
+                <th scope="col">Amount Due</th>
+              </tr>
+            </thead>
+            <tbody id="checking-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="admin-panel" role="tabpanel" aria-labelledby="tab-admin" hidden>
+      <div class="admin-grid">
+        <div class="admin-card">
+          <h2>Billing Period</h2>
+          <p class="panel-helper">Pick the start and end dates for the billing cycle.</p>
+          <form id="billing-form" class="record-form">
+            <div class="form-row">
+              <label for="billing-start">Start date</label>
+              <input id="billing-start" name="start" type="date" required>
+            </div>
+            <div class="form-row">
+              <label for="billing-end">End date</label>
+              <input id="billing-end" name="end" type="date" required>
+            </div>
+            <div class="billing-actions">
+              <button type="submit" class="primary">Save Period</button>
+              <button type="button" id="billing-current" class="secondary">Current Period</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="admin-card">
+          <h2>Set Monthly Expenses</h2>
+          <p class="panel-helper">Enter the shared expenses per category and the system will divide them evenly across all residents.</p>
+          <form id="admin-form" class="record-form">
+            <div class="form-row">
+              <label for="admin-rent">Rent</label>
+              <input id="admin-rent" name="rent" type="number" min="0" step="0.01">
+            </div>
+            <div class="form-row">
+              <label for="admin-water">Water</label>
+              <input id="admin-water" name="water" type="number" min="0" step="0.01">
+            </div>
+            <div class="form-row">
+              <label for="admin-electric">Electric</label>
+            <input id="admin-electric" name="electric" type="number" min="0" step="0.01">
+            </div>
+            <div class="form-row">
+              <label for="admin-internet">Internet</label>
+          <input id="admin-internet" name="internet" type="number" min="0" step="0.01">
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <template id="user-row-template">
+    <tr>
+      <th scope="row" class="name"></th>
+      <td class="days"></td>
+      <td class="water"></td>
+      <td class="electric"></td>
+      <td class="internet"></td>
+      <td class="rent"></td>
+      <td class="total"></td>
+      <td class="credit"></td>
+      <td class="mineral-credit"></td>
+      <td class="amount-due"></td>
+      <td>
+        <button type="button" class="secondary details-btn" aria-expanded="false">Details</button>
+        <button type="button" class="danger delete-btn">Delete</button>
+      </td>
+    </tr>
+  </template>
+
+  <template id="user-detail-template">
+    <tr class="user-details" hidden>
+      <td colspan="9">
+        <div class="detail-card">
+          <div class="detail-grid">
+            <section class="detail-section breakdown-section">
+              <h3>Bill Breakdown</h3>
+              <dl class="breakdown-list">
+                <div>
+                  <dt>Days Present</dt>
+                  <dd class="breakdown-days-present">0</dd>
+                  <p class="breakdown-note breakdown-days-note" hidden></p>
+                </div>
+                <div>
+                  <dt>Days Away</dt>
+                  <dd class="breakdown-days-out">0</dd>
+                </div>
+                <div>
+                  <dt>Rent Share</dt>
+                  <dd class="breakdown-rent">₱0.00</dd>
+                  <p class="breakdown-note breakdown-rent-note" hidden></p>
+                </div>
+                <div>
+                  <dt>Water Share</dt>
+                  <dd class="breakdown-water">₱0.00</dd>
+                  <p class="breakdown-note breakdown-water-note" hidden></p>
+                </div>
+                <div>
+                  <dt>Electric Share</dt>
+                  <dd class="breakdown-electric">₱0.00</dd>
+                  <p class="breakdown-note breakdown-electric-note" hidden></p>
+                </div>
+                <div>
+                  <dt>Internet Share</dt>
+                  <dd class="breakdown-internet">₱0.00</dd>
+                  <p class="breakdown-note breakdown-internet-note" hidden></p>
+                </div>
+                <div>
+                  <dt>Utilities Share</dt>
+                  <dd class="breakdown-total">₱0.00</dd>
+                  <p class="breakdown-note breakdown-utilities-note" hidden></p>
+                </div>
+                <div>
+                  <dt>Abono Credit</dt>
+                  <dd class="breakdown-credit">₱0.00</dd>
+                </div>
+                <div>
+                  <dt>Mineral Abono</dt>
+                  <dd class="breakdown-mineral">₱0.00</dd>
+                </div>
+                <div>
+                  <dt>Amount Due</dt>
+                  <dd class="breakdown-due">₱0.00</dd>
+                  <p class="breakdown-note breakdown-amount-note" hidden></p>
+                </div>
+              </dl>
+            </section>
+
+            <section class="detail-section receipts-section">
+              <h3>Abono Receipts</h3>
+              <ul class="receipt-list" aria-live="polite"></ul>
+              <p class="receipt-hint">Manage receipts from the Abono tab.</p>
+            </section>
+          </div>
+        </div>
+      </td>
+    </tr>
+  </template>
+
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>
