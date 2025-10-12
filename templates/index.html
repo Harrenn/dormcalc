@@ -49,6 +49,10 @@
 
       <form id="register-admin-form" class="auth-form" data-view="register-admin" hidden>
         <div class="form-row">
+          <label for="register-admin-dorm-name">Dorm name</label>
+          <input id="register-admin-dorm-name" name="dorm_name" type="text" maxlength="120" placeholder="e.g., Riverside Dorm 5F" required>
+        </div>
+        <div class="form-row">
           <label for="register-admin-username">Username</label>
           <input id="register-admin-username" name="username" type="text" autocomplete="username" required>
         </div>
@@ -89,10 +93,13 @@
   <main class="app" id="app-root" hidden>
     <header>
       <div class="header-row">
-        <h1>Dorm Expense Tracker</h1>
+        <div class="heading-group">
+          <h1 id="app-title">Dorm Expense Tracker</h1>
+          <p id="workspace-name" class="workspace-name" hidden></p>
+        </div>
         <div class="user-bar" id="user-bar" hidden>
           <span id="user-info"></span>
-          <button type="button" class="secondary" id="logout-btn">Log out</button>
+          <button type="button" class="secondary logout-btn" id="logout-btn">Log out</button>
         </div>
       </div>
       <p class="tagline">Track water, electric, internet, and abono adjustments per resident.</p>
@@ -472,6 +479,19 @@
 
     <section class="tab-panel" id="admin-panel" role="tabpanel" aria-labelledby="tab-admin" hidden>
       <div class="admin-grid">
+        <div class="admin-card">
+          <h2>Dorm Workspace</h2>
+          <p class="panel-helper">Give this dashboard a name so renters know which dorm they’re in.</p>
+          <form id="workspace-form" class="record-form">
+            <div class="form-row">
+              <label for="workspace-name-input">Dorm name</label>
+              <input id="workspace-name-input" name="name" type="text" maxlength="120" placeholder="e.g., Riverside Dorm 5F" required>
+            </div>
+            <button type="submit" class="primary">Save Name</button>
+            <p class="panel-feedback" id="workspace-feedback" hidden></p>
+          </form>
+        </div>
+
         <div class="admin-card admin-invite-card" id="admin-invite-card" hidden>
           <h2>Renter Invite Link</h2>
           <p class="panel-helper">Share this private link with renters so they can create their own accounts for this dorm.</p>
@@ -525,6 +545,60 @@
             </div>
           </form>
         </div>
+      </div>
+    </section>
+  </main>
+
+  <main class="super-app" id="super-admin-root" hidden>
+    <header>
+      <div class="header-row">
+        <div class="heading-group">
+          <h1>Super Admin Dashboard</h1>
+          <p class="tagline">Monitor every dorm workspace, manage admins, and keep accounts in sync.</p>
+        </div>
+        <div class="user-bar" id="super-user-bar" hidden>
+          <span id="super-user-info"></span>
+          <button type="button" class="secondary logout-btn" id="super-logout-btn">Log out</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="super-stats" aria-live="polite">
+      <div class="total-grid">
+        <div class="total-card super-card">
+          <span class="label">Dorms</span>
+          <span class="value" id="super-total-tenants">0</span>
+        </div>
+        <div class="total-card super-card">
+          <span class="label">Admins</span>
+          <span class="value" id="super-total-admins">0</span>
+        </div>
+        <div class="total-card super-card">
+          <span class="label">Renters</span>
+          <span class="value" id="super-total-renters">0</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="super-table-section" aria-labelledby="super-tenants-heading">
+      <div class="section-header">
+        <h2 id="super-tenants-heading">Dorm Workspaces</h2>
+        <p class="panel-helper">Review admins and renters per workspace, or purge data when needed.</p>
+      </div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Dorm</th>
+              <th scope="col">Residents</th>
+              <th scope="col">Admins</th>
+              <th scope="col">Renters</th>
+              <th scope="col">Last Activity</th>
+              <th scope="col" class="actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="super-tenant-body"></tbody>
+        </table>
       </div>
     </section>
   </main>

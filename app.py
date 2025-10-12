@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
+import argparse
+import sys
+import shutil
+import getpass
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from uuid import uuid4
+from threading import Lock
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 from flask import Flask, jsonify, render_template, request, send_from_directory, session, g
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -18,12 +24,16 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "pdf"}
+DATA_DIR = BASE_DIR / "data"
+STORAGE_FILE = DATA_DIR / "storage.json"
 
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 
 CATEGORIES: tuple[str, ...] = ("water", "electric", "internet")
 EXPENSE_FIELDS: tuple[str, ...] = (*CATEGORIES, "rent")
+MAX_WORKSPACE_NAME_LENGTH = 120
+SUPERADMIN_TENANT_ID = 0
 
 
 @dataclass
@@ -64,10 +74,12 @@ class Account:
   id: int
   username: str
   password_hash: str
-  role: str  # "admin" or "renter"
+  role: str  # "admin", "renter", or "superadmin"
   tenant_id: int
+  last_active_at: Optional[datetime] = None
 
 
+storage_lock = Lock()
 accounts: Dict[int, Account] = {}
 tenants: Dict[int, Dict[str, object]] = {}
 next_account_id = 1
@@ -131,15 +143,26 @@ def require_auth(role: Optional[str] = None):
         session.pop("account_id", None)
         return jsonify({"message": "Authentication required."}), 401
 
-      tenant = tenants.get(account.tenant_id)
-      if tenant is None:
-        return jsonify({"message": "Tenant not found."}), 404
-
       g.account = account
-      g.tenant = tenant
 
       if role and account.role != role:
-        return jsonify({"message": "Admin privileges required."}), 403
+        message = "Admin privileges required." if role == "admin" else "Super admin privileges required."
+        return jsonify({"message": message}), 403
+
+      tenant = None
+      if account.role != "superadmin":
+        tenant = tenants.get(account.tenant_id)
+        if tenant is None:
+          return jsonify({"message": "Tenant not found."}), 404
+
+      g.tenant = tenant
+
+      now = datetime.utcnow()
+      last_seen = account.last_active_at
+      account.last_active_at = now
+      should_persist = last_seen is None or (now - last_seen) >= timedelta(minutes=1)
+      if should_persist and getattr(function, "__name__", "") != "persist_state":
+        persist_state()
 
       return function(*args, **kwargs)
 
@@ -148,7 +171,16 @@ def require_auth(role: Optional[str] = None):
   return decorator
 
 
-def create_tenant() -> Dict[str, object]:
+def normalise_workspace_name(name: Optional[str], tenant_id: int) -> str:
+  resolved = (name or "").strip()
+  if not resolved:
+    return f"Dorm #{tenant_id}"
+  if len(resolved) > MAX_WORKSPACE_NAME_LENGTH:
+    resolved = resolved[:MAX_WORKSPACE_NAME_LENGTH].strip()
+  return resolved
+
+
+def create_tenant(name: Optional[str] = None) -> Dict[str, object]:
   global next_tenant_id
   tenant_id = next_tenant_id
   next_tenant_id += 1
@@ -157,8 +189,11 @@ def create_tenant() -> Dict[str, object]:
     "id": tenant_id,
     "state": tenant_state,
     "invite_token": generate_invite_token(),
+    "name": normalise_workspace_name(name, tenant_id),
   }
   tenants[tenant_id] = tenant_record
+  get_tenant_upload_folder(tenant_id)
+  persist_state()
   return tenant_record
 
 
@@ -166,20 +201,24 @@ def create_account(username: str, password: str, role: str, tenant_id: int) -> A
   global next_account_id
   account_id = next_account_id
   next_account_id += 1
+  now = datetime.utcnow()
   account = Account(
     id=account_id,
     username=username,
-    password_hash=generate_password_hash(password),
+    password_hash=generate_password_hash(password, method="pbkdf2:sha256"),
     role=role,
     tenant_id=tenant_id,
+    last_active_at=now,
   )
   accounts[account_id] = account
+  persist_state()
   return account
 
 
 def rotate_invite_token(tenant: Dict[str, object]) -> str:
   token = generate_invite_token()
   tenant["invite_token"] = token
+  persist_state()
   return token
 
 
@@ -205,6 +244,8 @@ def account_payload(account: Account) -> Dict[str, object]:
     "id": account.id,
     "username": account.username,
     "role": account.role,
+    "tenant_id": account.tenant_id,
+    "last_active_at": account.last_active_at.isoformat() if account.last_active_at else None,
   }
   return data
 
@@ -344,7 +385,56 @@ def serialise_fixed(charge: FixedCharge) -> Dict[str, object]:
   }
 
 
+def serialise_account_summary(account: Account) -> Dict[str, object]:
+  return {
+    "id": account.id,
+    "username": account.username,
+    "role": account.role,
+    "tenant_id": account.tenant_id,
+    "last_active_at": account.last_active_at.isoformat() if account.last_active_at else None,
+  }
+
+
+def iter_accounts_by_role(role: str) -> List[Account]:
+  return [account for account in accounts.values() if account.role == role]
+
+
+def tenant_overview(tenant: Dict[str, object]) -> Dict[str, object]:
+  tenant_id = tenant["id"]
+  tenant_name = tenant.get("name") or f"Dorm #{tenant_id}"
+  admins = [
+    serialise_account_summary(account)
+    for account in accounts.values()
+    if account.role == "admin" and account.tenant_id == tenant_id
+  ]
+  renters = [
+    serialise_account_summary(account)
+    for account in accounts.values()
+    if account.role == "renter" and account.tenant_id == tenant_id
+  ]
+  state = tenant["state"]
+  residents = [{"id": user.id, "name": user.name} for user in state["users"]]
+  last_active_dt = None
+  for account in accounts.values():
+    if account.tenant_id == tenant_id and account.last_active_at:
+      if last_active_dt is None or account.last_active_at > last_active_dt:
+        last_active_dt = account.last_active_at
+
+  return {
+    "id": tenant_id,
+    "name": tenant_name,
+    "resident_count": len(residents),
+    "residents": residents,
+    "admins": admins,
+    "renters": renters,
+    "admin_count": len(admins),
+    "renter_count": len(renters),
+    "last_active_at": last_active_dt.isoformat() if last_active_dt else None,
+  }
+
+
 def current_state() -> Dict[str, object]:
+  tenant = g.tenant
   tenant_state = get_state()
   users: List[User] = tenant_state["users"]
   outs: List[OutRecord] = tenant_state["outs"]
@@ -438,6 +528,9 @@ def current_state() -> Dict[str, object]:
       "total_residents": len(users),
       "fixed_totals": fixed_totals,
     },
+    "workspace": {
+      "name": tenant.get("name") or f"Dorm #{tenant['id']}",
+    },
   }
 
 
@@ -509,6 +602,7 @@ def set_billing_period_override(start: Optional[date], end: Optional[date]) -> N
     tenant_state["billing_period"] = {"start": start.isoformat(), "end": end.isoformat()}
   else:
     tenant_state["billing_period"] = None
+  persist_state()
 
 
 def serialise_period(period: tuple[date, date]) -> Dict[str, str]:
@@ -527,8 +621,10 @@ def api_auth_session():
     "authenticated": True,
     "account": account_payload(account),
   }
-  if account.role == "admin" and tenant:
-    response["invite_token"] = tenant.get("invite_token")
+  if tenant:
+    response["workspace"] = {"name": tenant.get("name") or f"Dorm #{tenant['id']}"}
+    if account.role == "admin":
+      response["invite_token"] = tenant.get("invite_token")
   return jsonify(response)
 
 
@@ -552,6 +648,8 @@ def api_auth_login():
     return jsonify({"message": "Invalid credentials."}), 401
 
   session["account_id"] = account.id
+  account.last_active_at = datetime.utcnow()
+  persist_state()
   tenant = tenants.get(account.tenant_id)
   response: Dict[str, object] = {"account": account_payload(account)}
   if account.role == "admin" and tenant:
@@ -564,19 +662,24 @@ def api_auth_register():
   payload = request.get_json(silent=True) or {}
   username = (payload.get("username") or "").strip()
   password = payload.get("password") or ""
+  dorm_name = (payload.get("dorm_name") or "").strip()
 
-  if not username or not password:
-    return jsonify({"message": "Username and password are required."}), 400
+  if not username or not password or not dorm_name:
+    return jsonify({"message": "Username, password, and dorm name are required."}), 400
+
+  if len(dorm_name) > MAX_WORKSPACE_NAME_LENGTH:
+    return jsonify({"message": "Dorm name is too long."}), 400
 
   if get_account_by_username(username):
     return jsonify({"message": "Username already taken."}), 409
 
-  tenant = create_tenant()
+  tenant = create_tenant(dorm_name)
   account = create_account(username, password, "admin", tenant["id"])
   session["account_id"] = account.id
   response: Dict[str, object] = {
     "account": account_payload(account),
     "invite_token": tenant.get("invite_token"),
+    "workspace": {"name": tenant.get("name")},
   }
   return jsonify(response), 201
 
@@ -618,6 +721,97 @@ def api_auth_invite_rotate():
   return jsonify({"invite_token": token})
 
 
+def build_superadmin_state() -> Dict[str, object]:
+  tenant_entries = [tenant_overview(tenant) for tenant in tenants.values()]
+  tenant_entries.sort(key=lambda entry: entry["name"].lower())
+  admin_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("admin")]
+  renter_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("renter")]
+  stats = {
+    "tenant_count": len(tenant_entries),
+    "admin_count": len(admin_accounts),
+    "renter_count": len(renter_accounts),
+  }
+  return {
+    "tenants": tenant_entries,
+    "admins": admin_accounts,
+    "renters": renter_accounts,
+    "stats": stats,
+  }
+
+
+def delete_accounts_by(predicate) -> int:
+  removed = []
+  for account_id, account in list(accounts.items()):
+    if predicate(account):
+      removed.append(account_id)
+      accounts.pop(account_id, None)
+  return len(removed)
+
+
+def purge_tenant(tenant_id: int) -> bool:
+  tenant = tenants.pop(tenant_id, None)
+  if tenant is None:
+    return False
+  delete_accounts_by(lambda acct: acct.tenant_id == tenant_id)
+  tenant_folder = UPLOAD_FOLDER / f"tenant_{tenant_id}"
+  shutil.rmtree(tenant_folder, ignore_errors=True)
+  persist_state()
+  return True
+
+
+@app.get("/api/super/state")
+@require_auth("superadmin")
+def api_super_state():
+  return jsonify(build_superadmin_state())
+
+
+@app.delete("/api/super/tenants/<int:tenant_id>")
+@require_auth("superadmin")
+def api_super_tenant_delete(tenant_id: int):
+  if tenant_id == SUPERADMIN_TENANT_ID:
+    return jsonify({"message": "Invalid tenant id."}), 400
+  if not purge_tenant(tenant_id):
+    return jsonify({"message": "Tenant not found."}), 404
+  return ("", 204)
+
+
+@app.delete("/api/super/admins/<int:account_id>")
+@require_auth("superadmin")
+def api_super_admin_delete(account_id: int):
+  account = accounts.get(account_id)
+  if account is None or account.role != "admin":
+    return jsonify({"message": "Admin not found."}), 404
+  accounts.pop(account_id, None)
+  persist_state()
+  return ("", 204)
+
+
+@app.delete("/api/super/renters/<int:account_id>")
+@require_auth("superadmin")
+def api_super_renter_delete(account_id: int):
+  account = accounts.get(account_id)
+  if account is None or account.role != "renter":
+    return jsonify({"message": "Renter not found."}), 404
+  accounts.pop(account_id, None)
+  persist_state()
+  return ("", 204)
+
+
+@app.patch("/api/workspace")
+@require_auth("admin")
+def api_workspace_update():
+  payload = request.get_json(silent=True) or {}
+  name = (payload.get("name") or "").strip()
+  if not name:
+    return jsonify({"message": "Dorm name is required."}), 400
+  if len(name) > MAX_WORKSPACE_NAME_LENGTH:
+    return jsonify({"message": "Dorm name is too long."}), 400
+  tenant = g.tenant
+  tenant["name"] = normalise_workspace_name(name, tenant["id"])
+  persist_state()
+  return jsonify({"workspace": {"name": tenant["name"]}})
+
+
 @app.get("/")
 def index():
   return render_template("index.html")
@@ -652,6 +846,7 @@ def api_users_create():
   new_user = User(id=tenant_state["next_id"], name=name)
   tenant_state["next_id"] += 1
   tenant_state["users"].append(new_user)
+  persist_state()
 
   return jsonify(current_state()), 201
 
@@ -692,6 +887,7 @@ def api_users_update(user_id: int):
       return jsonify({"message": "Mineral credit cannot be negative."}), 400
     user.mineral_credit = mineral_value
 
+  persist_state()
   return jsonify(current_state())
 
 
@@ -714,6 +910,7 @@ def api_users_delete(user_id: int):
           (tenant_folder / Path(receipt.filename).name).unlink(missing_ok=True)
         except OSError:
           pass
+      persist_state()
       return ("", 204)
 
   return jsonify({"message": "User not found."}), 404
@@ -759,6 +956,7 @@ def api_receipts_create(user_id: int):
 
   tenant_state["receipts"].append(receipt)
   tenant_state["next_receipt_id"] += 1
+  persist_state()
 
   return jsonify(serialise_receipt(receipt)), 201
 
@@ -781,6 +979,7 @@ def api_receipts_delete(user_id: int, receipt_id: int):
 
   tenant_state = get_state()
   tenant_state["receipts"] = [entry for entry in tenant_state["receipts"] if entry.id != receipt_id]
+  persist_state()
 
   return ("", 204)
 
@@ -839,6 +1038,7 @@ def api_outs_create():
   )
   tenant_state["next_out_id"] += 1
   tenant_state["outs"].append(new_record)
+  persist_state()
 
   return jsonify(current_state()), 201
 
@@ -877,6 +1077,7 @@ def api_outs_update(out_id: int):
 
   record.start = start
   record.end = end
+  persist_state()
   return jsonify(current_state())
 
 
@@ -888,6 +1089,7 @@ def api_outs_delete(out_id: int):
   for index, record in enumerate(records):
     if record.id == out_id:
       records.pop(index)
+      persist_state()
       return ("", 204)
 
   return jsonify({"message": "Out record not found."}), 404
@@ -911,6 +1113,7 @@ def api_expenses_update():
       return jsonify({"message": f"{category.title()} expense cannot be negative."}), 400
     expenses[category] = value
 
+  persist_state()
   return jsonify(current_state())
 
 
@@ -942,6 +1145,7 @@ def api_fixed_create():
   )
   tenant_state["next_fixed_id"] += 1
   tenant_state["fixed"].append(charge)
+  persist_state()
 
   return jsonify(serialise_fixed(charge)), 201
 
@@ -975,6 +1179,7 @@ def api_fixed_update(fixed_id: int):
     if amount_value < 0:
       return jsonify({"message": "Amount cannot be negative."}), 400
     charge.amount = amount_value
+  persist_state()
 
   return jsonify(serialise_fixed(charge))
 
@@ -987,10 +1192,303 @@ def api_fixed_delete(fixed_id: int):
   for index, charge in enumerate(charges):
     if charge.id == fixed_id:
       charges.pop(index)
+      persist_state()
       return ("", 204)
 
   return jsonify({"message": "Fixed charge not found."}), 404
 
 
-if __name__ == "__main__":
+def get_superadmin_accounts() -> List[Account]:
+  return iter_accounts_by_role("superadmin")
+
+
+def clear_superadmin_accounts() -> int:
+  removed = delete_accounts_by(lambda account: account.role == "superadmin")
+  if removed:
+    persist_state()
+  return removed
+
+
+def set_superadmin_credentials(username: str, password: str) -> Account:
+  existing = get_account_by_username(username)
+  if existing and existing.role != "superadmin":
+    raise ValueError("Username already exists for another account.")
+  if existing and existing.role == "superadmin":
+    existing.password_hash = generate_password_hash(password, method="pbkdf2:sha256")
+    existing.last_active_at = datetime.utcnow()
+    persist_state()
+    return existing
+
+  clear_superadmin_accounts()
+  account = create_account(username, password, "superadmin", SUPERADMIN_TENANT_ID)
+  return account
+
+
+def serialise_user_obj(user: User) -> Dict[str, object]:
+  return {
+    "id": user.id,
+    "name": user.name,
+    "various_credit": user.various_credit,
+    "mineral_credit": user.mineral_credit,
+  }
+
+
+def deserialise_user_obj(data: Dict[str, object]) -> User:
+  return User(
+    id=int(data["id"]),
+    name=str(data["name"]),
+    various_credit=float(data.get("various_credit", 0.0)),
+    mineral_credit=float(data.get("mineral_credit", 0.0)),
+  )
+
+
+def serialise_out_obj(record: OutRecord) -> Dict[str, object]:
+  return {
+    "id": record.id,
+    "user_id": record.user_id,
+    "start": record.start.isoformat(),
+    "end": record.end.isoformat(),
+  }
+
+
+def deserialise_out_obj(data: Dict[str, object]) -> OutRecord:
+  return OutRecord(
+    id=int(data["id"]),
+    user_id=int(data["user_id"]),
+    start=datetime.strptime(data["start"], "%Y-%m-%d").date(),
+    end=datetime.strptime(data["end"], "%Y-%m-%d").date(),
+  )
+
+
+def serialise_fixed_obj(charge: FixedCharge) -> Dict[str, object]:
+  return {
+    "id": charge.id,
+    "name": charge.name,
+    "category": charge.category,
+    "amount": charge.amount,
+  }
+
+
+def deserialise_fixed_obj(data: Dict[str, object]) -> FixedCharge:
+  return FixedCharge(
+    id=int(data["id"]),
+    name=str(data["name"]),
+    category=str(data["category"]),
+    amount=float(data.get("amount", 0.0)),
+  )
+
+
+def serialise_receipt_obj(receipt: Receipt) -> Dict[str, object]:
+  return {
+    "id": receipt.id,
+    "user_id": receipt.user_id,
+    "filename": receipt.filename,
+    "original_name": receipt.original_name,
+    "uploaded_at": receipt.uploaded_at.isoformat(),
+  }
+
+
+def deserialise_receipt_obj(data: Dict[str, object]) -> Receipt:
+  uploaded_at_raw = data.get("uploaded_at")
+  uploaded_at = datetime.fromisoformat(uploaded_at_raw) if uploaded_at_raw else datetime.utcnow()
+  return Receipt(
+    id=int(data["id"]),
+    user_id=int(data["user_id"]),
+    filename=str(data["filename"]),
+    original_name=str(data.get("original_name", "")),
+    uploaded_at=uploaded_at,
+  )
+
+
+def serialise_state(state: Dict[str, object]) -> Dict[str, object]:
+  return {
+    "users": [serialise_user_obj(user) for user in state["users"]],
+    "outs": [serialise_out_obj(record) for record in state["outs"]],
+    "fixed": [serialise_fixed_obj(charge) for charge in state["fixed"]],
+    "receipts": [serialise_receipt_obj(receipt) for receipt in state["receipts"]],
+    "next_id": state["next_id"],
+    "next_out_id": state["next_out_id"],
+    "next_fixed_id": state["next_fixed_id"],
+    "next_receipt_id": state["next_receipt_id"],
+    "billing_period": state["billing_period"],
+    "expenses": state["expenses"],
+  }
+
+
+def deserialise_state(data: Dict[str, object]) -> Dict[str, object]:
+  if data is None:
+    return make_default_tenant_state()
+  return {
+    "users": [deserialise_user_obj(entry) for entry in data.get("users", [])],
+    "outs": [deserialise_out_obj(entry) for entry in data.get("outs", [])],
+    "fixed": [deserialise_fixed_obj(entry) for entry in data.get("fixed", [])],
+    "receipts": [deserialise_receipt_obj(entry) for entry in data.get("receipts", [])],
+    "next_id": int(data.get("next_id", 1)),
+    "next_out_id": int(data.get("next_out_id", 1)),
+    "next_fixed_id": int(data.get("next_fixed_id", 1)),
+    "next_receipt_id": int(data.get("next_receipt_id", 1)),
+    "billing_period": data.get("billing_period"),
+    "expenses": {
+      "water": float(data.get("expenses", {}).get("water", 0.0)),
+      "electric": float(data.get("expenses", {}).get("electric", 0.0)),
+      "internet": float(data.get("expenses", {}).get("internet", 0.0)),
+      "rent": float(data.get("expenses", {}).get("rent", 0.0)),
+    },
+  }
+
+
+def serialise_tenant_record(tenant: Dict[str, object]) -> Dict[str, object]:
+  return {
+    "id": tenant["id"],
+    "invite_token": tenant.get("invite_token"),
+    "name": tenant.get("name"),
+    "state": serialise_state(tenant["state"]),
+  }
+
+
+def save_storage() -> None:
+  DATA_DIR.mkdir(parents=True, exist_ok=True)
+  payload = {
+    "next_account_id": next_account_id,
+    "next_tenant_id": next_tenant_id,
+    "accounts": [
+      {
+        "id": account.id,
+        "username": account.username,
+        "password_hash": account.password_hash,
+        "role": account.role,
+        "tenant_id": account.tenant_id,
+        "last_active_at": account.last_active_at.isoformat() if account.last_active_at else None,
+      }
+      for account in accounts.values()
+    ],
+    "tenants": [serialise_tenant_record(tenant) for tenant in tenants.values()],
+  }
+  with storage_lock, STORAGE_FILE.open("w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2)
+
+
+def load_storage() -> None:
+  global accounts, tenants, next_account_id, next_tenant_id
+  if not STORAGE_FILE.exists():
+    accounts = {}
+    tenants = {}
+    next_account_id = 1
+    next_tenant_id = 1
+    return
+
+  with STORAGE_FILE.open("r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+  next_account_id = int(payload.get("next_account_id", 1))
+  next_tenant_id = int(payload.get("next_tenant_id", 1))
+
+  accounts = {}
+  for entry in payload.get("accounts", []):
+    last_active_raw = entry.get("last_active_at")
+    last_active = None
+    if last_active_raw:
+      try:
+        last_active = datetime.fromisoformat(last_active_raw)
+      except ValueError:
+        last_active = None
+    account = Account(
+      id=int(entry["id"]),
+      username=str(entry["username"]),
+      password_hash=str(entry["password_hash"]),
+      role=str(entry.get("role", "renter")),
+      tenant_id=int(entry["tenant_id"]),
+      last_active_at=last_active,
+    )
+    accounts[account.id] = account
+
+  tenants = {}
+  for entry in payload.get("tenants", []):
+    tenant_id = int(entry["id"])
+    tenant_state = deserialise_state(entry.get("state"))
+    tenants[tenant_id] = {
+      "id": tenant_id,
+      "invite_token": entry.get("invite_token"),
+      "state": tenant_state,
+      "name": normalise_workspace_name(entry.get("name"), tenant_id),
+    }
+    get_tenant_upload_folder(tenant_id)
+
+
+def persist_state() -> None:
+  save_storage()
+
+
+load_storage()
+
+
+def parse_cli_args():
+  parser = argparse.ArgumentParser(description="Dorm Expense Tracker application")
+  subparsers = parser.add_subparsers(dest="command")
+
+  superadmin_parser = subparsers.add_parser(
+    "superadmin", help="Create, update, or clear super admin credentials."
+  )
+  superadmin_parser.add_argument(
+    "--set",
+    metavar="USERNAME",
+    help="Username for the super admin account (omit to prompt).",
+  )
+  superadmin_parser.add_argument(
+    "--password",
+    help="Password for the super admin account (omit to prompt securely).",
+  )
+  superadmin_parser.add_argument(
+    "--clear",
+    action="store_true",
+    help="Remove all existing super admin credentials.",
+  )
+
+  return parser.parse_args()
+
+
+def handle_superadmin_cli(args) -> int:
+  if args.clear:
+    removed = clear_superadmin_accounts()
+    print(f"Removed {removed} super admin account(s).")
+    return 0
+
+  username = args.set
+  if not username:
+    username = input("Enter super admin username: ").strip()
+  if not username:
+    print("Username is required.", file=sys.stderr)
+    return 1
+
+  password = args.password
+  if not password:
+    password = getpass.getpass("Enter super admin password: ")
+    confirm = getpass.getpass("Confirm password: ")
+    if password != confirm:
+      print("Passwords do not match.", file=sys.stderr)
+      return 1
+  if not password:
+    print("Password is required.", file=sys.stderr)
+    return 1
+
+  try:
+    account = set_superadmin_credentials(username.strip(), password)
+  except ValueError as exc:
+    print(f"Error: {exc}", file=sys.stderr)
+    return 1
+
+  print(f"Super admin credentials saved for '{account.username}'.")
+  return 0
+
+
+def main():
+  args = parse_cli_args()
+  if args.command == "superadmin":
+    exit_code = handle_superadmin_cli(args)
+    sys.exit(exit_code)
+
   app.run(debug=True)
+
+
+if __name__ == "__main__":
+  main()

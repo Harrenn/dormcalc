@@ -1,7 +1,11 @@
 const categories = ["water", "electric", "internet"];
 const expenseFields = [...categories];
+const baseDocumentTitle = document.title;
 
 const appState = {
+  workspace: {
+    name: "",
+  },
   users: [],
   expenses: {
     water: 0,
@@ -35,15 +39,41 @@ const appState = {
   },
 };
 
+const superState = {
+  tenants: [],
+  admins: [],
+  renters: [],
+  stats: {
+    tenant_count: 0,
+    admin_count: 0,
+    renter_count: 0,
+  },
+};
+
+const resetSuperState = () => {
+  superState.tenants = [];
+  superState.admins = [];
+  superState.renters = [];
+  superState.stats = {
+    tenant_count: 0,
+    admin_count: 0,
+    renter_count: 0,
+  };
+  openSuperDetails.clear();
+};
+
 const sessionState = {
   authenticated: false,
   account: null,
   inviteToken: null,
+  workspaceName: "",
 };
 
 let selectedAwayUserId = null;
 let selectedAbonoUserId = null;
 const openDetails = new Set();
+let workspaceFeedbackTimeoutId = null;
+const openSuperDetails = new Set();
 
 const getUserById = (id) =>
   appState.users.find((user) => user.id === id) || null;
@@ -53,6 +83,23 @@ const formatCurrency = (value) =>
     style: "currency",
     currency: "PHP",
   }).format(value ?? 0);
+
+const formatDateTime = (value) => {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("en-PH", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 const normaliseCurrency = (value) => (Math.abs(value ?? 0) < 0.005 ? 0 : value ?? 0);
 
@@ -200,6 +247,10 @@ const renderReceiptList = (
 
 const elements = {
   appRoot: document.getElementById("app-root"),
+  header: {
+    title: document.getElementById("app-title"),
+    workspaceName: document.getElementById("workspace-name"),
+  },
   auth: {
     screen: document.getElementById("auth-screen"),
     message: document.getElementById("auth-message"),
@@ -222,18 +273,34 @@ const elements = {
       loginRenterPassword: document.getElementById("login-renter-password"),
       registerAdminUsername: document.getElementById("register-admin-username"),
       registerAdminPassword: document.getElementById("register-admin-password"),
+      registerAdminDormName: document.getElementById("register-admin-dorm-name"),
     },
     overlay: {
       container: document.getElementById("invite-overlay"),
       link: document.getElementById("invite-overlay-link"),
       copyBtn: document.getElementById("invite-overlay-copy"),
       continueBtn: document.getElementById("invite-overlay-continue"),
+      feedback: document.getElementById("invite-overlay-feedback"),
     },
   },
   userBar: {
     container: document.getElementById("user-bar"),
     info: document.getElementById("user-info"),
     logout: document.getElementById("logout-btn"),
+  },
+  superAdmin: {
+    root: document.getElementById("super-admin-root"),
+    userBar: document.getElementById("super-user-bar"),
+    userInfo: document.getElementById("super-user-info"),
+    stats: {
+      tenants: document.getElementById("super-total-tenants"),
+      admins: document.getElementById("super-total-admins"),
+      renters: document.getElementById("super-total-renters"),
+    },
+    tableBody: document.getElementById("super-tenant-body"),
+    rowTemplate: document.getElementById("super-tenant-row-template"),
+    detailTemplate: document.getElementById("super-tenant-detail-template"),
+    logout: document.getElementById("super-logout-btn"),
   },
   form: document.getElementById("add-user-form"),
   adminForm: document.getElementById("admin-form"),
@@ -252,6 +319,11 @@ const elements = {
   },
   tabButtons: Array.from(document.querySelectorAll(".tab-button")),
   tabPanels: Array.from(document.querySelectorAll(".tab-panel")),
+  workspace: {
+    form: document.getElementById("workspace-form"),
+    nameInput: document.getElementById("workspace-name-input"),
+    feedback: document.getElementById("workspace-feedback"),
+  },
   adminInvite: {
     card: document.getElementById("admin-invite-card"),
     link: document.getElementById("admin-invite-link"),
@@ -309,6 +381,8 @@ const elements = {
     emptyMessage: document.getElementById("fixed-empty"),
   },
 };
+
+elements.logoutButtons = Array.from(document.querySelectorAll(".logout-btn"));
 
 const parseAmount = (value) => {
   const parsed = parseFloat(value);
@@ -403,6 +477,7 @@ const setAuthView = (view, options = {}) => {
       form.reset();
     }
     form.hidden = !isMatch;
+    form.classList.toggle("active", isMatch);
     if (isMatch && !options.skipFocus) {
       const input = form.querySelector("input:not([type='hidden']):not([disabled])");
       if (input) {
@@ -481,19 +556,61 @@ const setInviteFeedback = (message, { target = "auto", error = false } = {}) => 
   }, 4000);
 };
 
+const setWorkspaceFeedback = (message, { error = false } = {}) => {
+  const feedback = elements.workspace.feedback;
+  if (!feedback) {
+    return;
+  }
+  if (workspaceFeedbackTimeoutId) {
+    clearTimeout(workspaceFeedbackTimeoutId);
+    workspaceFeedbackTimeoutId = null;
+  }
+  if (!message) {
+    feedback.hidden = true;
+    feedback.classList.remove("error");
+    feedback.textContent = "";
+    return;
+  }
+  feedback.textContent = message;
+  feedback.hidden = false;
+  feedback.classList.toggle("error", error);
+  workspaceFeedbackTimeoutId = setTimeout(() => {
+    feedback.hidden = true;
+    feedback.classList.remove("error");
+    workspaceFeedbackTimeoutId = null;
+  }, 4000);
+};
+
 const updateUserBar = () => {
   const container = elements.userBar.container;
-  if (!container) {
-    return;
-  }
   const account = sessionState.account;
-  if (!sessionState.authenticated || !account) {
-    container.hidden = true;
-    return;
+  const isSuperAdmin = account?.role === "superadmin";
+
+  if (container) {
+    if (!sessionState.authenticated || !account || isSuperAdmin) {
+      container.hidden = true;
+    } else {
+      container.hidden = false;
+      if (elements.userBar.info) {
+        elements.userBar.info.textContent = `${account.username} (${account.role})`;
+      }
+    }
   }
-  container.hidden = false;
-  if (elements.userBar.info) {
-    elements.userBar.info.textContent = `${account.username} (${account.role})`;
+
+  const superBar = elements.superAdmin.userBar;
+  const superInfo = elements.superAdmin.userInfo;
+  if (superBar) {
+    if (!sessionState.authenticated || !account || !isSuperAdmin) {
+      superBar.hidden = true;
+      if (superInfo) {
+        superInfo.textContent = "";
+      }
+    } else {
+      superBar.hidden = false;
+      if (superInfo) {
+        superInfo.textContent = `${account.username} (super admin)`;
+      }
+    }
   }
 };
 
@@ -572,6 +689,7 @@ const logout = async () => {
   } catch (error) {
     console.error("Failed to log out:", error);
   } finally {
+    resetSuperState();
     await refreshSession();
   }
 };
@@ -612,6 +730,16 @@ const applyRolePermissions = () => {
     if (fixedGrid) {
       fixedGrid.classList.toggle("read-only", !isAdmin);
     }
+  }
+  setFieldsDisabled(elements.workspace.form, !isAdmin);
+  if (elements.workspace.form) {
+    const workspaceCard = elements.workspace.form.closest(".admin-card");
+    if (workspaceCard) {
+      workspaceCard.classList.toggle("read-only", !isAdmin);
+    }
+  }
+  if (!isAdmin) {
+    setWorkspaceFeedback("");
   }
 
   if (elements.tbody) {
@@ -654,15 +782,21 @@ const updateAdminInviteCard = () => {
 
 const updateUIForSession = () => {
   const authed = sessionState.authenticated;
+  const role = sessionState.account?.role || "guest";
+  const isSuperAdmin = role === "superadmin";
   if (elements.auth.screen) {
     elements.auth.screen.hidden = authed;
   }
   if (elements.appRoot) {
-    elements.appRoot.hidden = !authed;
+    elements.appRoot.hidden = !authed || isSuperAdmin;
+  }
+  if (elements.superAdmin.root) {
+    elements.superAdmin.root.hidden = !authed || !isSuperAdmin;
   }
   updateUserBar();
   applyRolePermissions();
   updateAdminInviteCard();
+  renderWorkspace();
 
   if (!authed) {
     const defaultView = inviteTokenFromQuery ? "register-renter" : "menu";
@@ -684,16 +818,23 @@ const refreshSession = async () => {
       sessionState.authenticated = true;
       sessionState.account = data.account || null;
       sessionState.inviteToken = data.invite_token || null;
+      sessionState.workspaceName = data.workspace?.name || "";
     } else {
       sessionState.authenticated = false;
       sessionState.account = null;
       sessionState.inviteToken = null;
+      sessionState.workspaceName = "";
     }
   } catch (error) {
     console.error("Failed to refresh session:", error);
     sessionState.authenticated = false;
     sessionState.account = null;
     sessionState.inviteToken = null;
+    sessionState.workspaceName = "";
+  }
+
+  if (!sessionState.authenticated || sessionState.account?.role !== "superadmin") {
+    resetSuperState();
   }
 
   updateUIForSession();
@@ -726,6 +867,9 @@ const getAwayUser = () => getUserById(selectedAwayUserId);
 const getAbonoUser = () => getUserById(selectedAbonoUserId);
 
 const applyState = (data) => {
+  const workspace = data.workspace ?? {};
+  appState.workspace.name =
+    typeof workspace.name === "string" ? workspace.name : appState.workspace.name || "";
   appState.users = Array.isArray(data.users) ? data.users : [];
   appState.expenses = { ...appState.expenses, ...(data.expenses ?? {}) };
   appState.totals = { ...appState.totals, ...(data.totals ?? {}) };
@@ -750,8 +894,21 @@ const applyState = (data) => {
   ensureSelectedAbonoUser();
 };
 
+const applySuperState = (data) => {
+  superState.tenants = Array.isArray(data?.tenants) ? data.tenants : [];
+  superState.admins = Array.isArray(data?.admins) ? data.admins : [];
+  superState.renters = Array.isArray(data?.renters) ? data.renters : [];
+  superState.stats = { ...superState.stats, ...(data?.stats ?? {}) };
+  const validIds = new Set(superState.tenants.map((tenant) => tenant.id));
+  Array.from(openSuperDetails).forEach((id) => {
+    if (!validIds.has(id)) {
+      openSuperDetails.delete(id);
+    }
+  });
+};
+
 const loadState = async () => {
-  if (!sessionState.authenticated) {
+  if (!sessionState.authenticated || sessionState.account?.role === "superadmin") {
     return;
   }
   try {
@@ -764,6 +921,19 @@ const loadState = async () => {
       return;
     }
     console.error("Failed to load state:", error);
+  }
+};
+
+const loadSuperState = async () => {
+  if (!sessionState.authenticated || sessionState.account?.role !== "superadmin") {
+    return;
+  }
+  try {
+    const data = await request("/api/super/state");
+    applySuperState(data);
+    renderSuperAdmin();
+  } catch (error) {
+    console.error("Failed to load super admin state:", error);
   }
 };
 
@@ -863,6 +1033,43 @@ const deleteReceipt = async (userId, receiptId) => {
   }
 };
 
+const deleteSuperTenant = async (tenantId) => {
+  try {
+    await request(`/api/super/tenants/${tenantId}`, { method: "DELETE" });
+    openSuperDetails.delete(tenantId);
+    await loadSuperState();
+  } catch (error) {
+    console.error("Failed to purge tenant:", error);
+  }
+};
+
+const deleteSuperAdminAccount = async (accountId) => {
+  try {
+    await request(`/api/super/admins/${accountId}`, { method: "DELETE" });
+    await loadSuperState();
+  } catch (error) {
+    console.error("Failed to remove admin:", error);
+  }
+};
+
+const deleteSuperRenterAccount = async (accountId) => {
+  try {
+    await request(`/api/super/renters/${accountId}`, { method: "DELETE" });
+    await loadSuperState();
+  } catch (error) {
+    console.error("Failed to remove renter:", error);
+  }
+};
+
+const toggleSuperTenantDetails = (tenantId) => {
+  if (openSuperDetails.has(tenantId)) {
+    openSuperDetails.delete(tenantId);
+  } else {
+    openSuperDetails.add(tenantId);
+  }
+  renderSuperAdmin();
+};
+
 const updateAbonoCredit = async (userId, value) => {
   const payload = {};
   if (typeof value === "number") {
@@ -950,6 +1157,20 @@ const updateExpenses = async (values) => {
   }
 };
 
+const updateWorkspaceName = async (name) => {
+  if (sessionState.account?.role !== "admin") {
+    throw new Error("Admin privileges required.");
+  }
+  const result = await request("/api/workspace", {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+  const workspaceName = result?.workspace?.name || name;
+  sessionState.workspaceName = workspaceName;
+  appState.workspace.name = workspaceName;
+  renderWorkspace();
+};
+
 const renderTotals = () => {
   categories.forEach((category) => {
     elements.totals[category].textContent = formatCurrency(normaliseCurrency(appState.totals[category]));
@@ -970,6 +1191,33 @@ const renderTotals = () => {
     );
   }
   elements.totals.grand.textContent = formatCurrency(normaliseCurrency(appState.totals.grand));
+};
+
+const getWorkspaceName = () => {
+  const nameFromState = (appState.workspace?.name || "").trim();
+  if (nameFromState) {
+    return nameFromState;
+  }
+  return (sessionState.workspaceName || "").trim();
+};
+
+const renderWorkspace = () => {
+  const display = elements.header?.workspaceName;
+  const name = getWorkspaceName();
+  const shouldShow = sessionState.authenticated && !!name;
+
+  if (display) {
+    display.textContent = shouldShow ? name : "";
+    display.hidden = !shouldShow;
+  }
+
+  const input = elements.workspace?.nameInput;
+  if (input && document.activeElement !== input) {
+    input.value = name;
+  }
+
+  const baseTitle = baseDocumentTitle || "Dorm Expense Tracker";
+  document.title = name ? `${name} · ${baseTitle}` : baseTitle;
 };
 
 const renderPeriod = () => {
@@ -1756,7 +2004,186 @@ const renderCheckingPanel = () => {
   });
 };
 
+const renderSuperStats = () => {
+  const stats = superState.stats || {};
+  if (elements.superAdmin.stats.tenants) {
+    elements.superAdmin.stats.tenants.textContent = String(stats.tenant_count ?? superState.tenants.length ?? 0);
+  }
+  if (elements.superAdmin.stats.admins) {
+    elements.superAdmin.stats.admins.textContent = String(stats.admin_count ?? superState.admins.length ?? 0);
+  }
+  if (elements.superAdmin.stats.renters) {
+    elements.superAdmin.stats.renters.textContent = String(stats.renter_count ?? superState.renters.length ?? 0);
+  }
+};
+
+const buildAccountListItem = ({ account, type }) => {
+  const item = document.createElement("li");
+  item.className = "super-account-item";
+
+  const info = document.createElement("span");
+  info.className = "account-label";
+  info.textContent = account.username;
+
+  const meta = document.createElement("span");
+  meta.className = "account-meta";
+  meta.textContent = `Last active: ${formatDateTime(account.last_active_at)}`;
+
+  item.append(info, meta);
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "danger";
+  removeButton.dataset.accountId = String(account.id);
+  if (type === "admin") {
+    removeButton.classList.add("super-remove-admin");
+    removeButton.textContent = "Remove Admin";
+  } else {
+    removeButton.classList.add("super-remove-renter");
+    removeButton.textContent = "Remove Renter";
+  }
+
+  item.appendChild(removeButton);
+  return item;
+};
+
+const renderSuperTenants = () => {
+  const tbody = elements.superAdmin.tableBody;
+  if (!tbody) {
+    return;
+  }
+  tbody.innerHTML = "";
+  if (!superState.tenants.length) {
+    const emptyRow = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 6;
+    cell.textContent = "No dorm workspaces registered yet.";
+    cell.classList.add("empty-row-cell");
+    emptyRow.appendChild(cell);
+    tbody.appendChild(emptyRow);
+    return;
+  }
+
+  superState.tenants.forEach((tenant) => {
+    const tenantId = Number(tenant.id);
+    const isOpen = openSuperDetails.has(tenantId);
+
+    const row = document.createElement("tr");
+    row.dataset.tenantId = String(tenantId);
+
+    const nameCell = document.createElement("th");
+    nameCell.scope = "row";
+    nameCell.className = "super-tenant-name";
+    nameCell.textContent = tenant.name || `Dorm ${tenantId}`;
+
+    const residentsCell = document.createElement("td");
+    residentsCell.className = "numeric-cell";
+    residentsCell.textContent = String(tenant.resident_count ?? 0);
+
+    const adminsCell = document.createElement("td");
+    adminsCell.className = "numeric-cell";
+    adminsCell.textContent = String(tenant.admin_count ?? (tenant.admins?.length ?? 0));
+
+    const rentersCell = document.createElement("td");
+    rentersCell.className = "numeric-cell";
+    rentersCell.textContent = String(tenant.renter_count ?? (tenant.renters?.length ?? 0));
+
+    const activityCell = document.createElement("td");
+    activityCell.textContent = formatDateTime(tenant.last_active_at);
+
+    const actionsCell = document.createElement("td");
+    actionsCell.className = "actions-col";
+    const detailButton = document.createElement("button");
+    detailButton.type = "button";
+    detailButton.className = "secondary super-tenant-details";
+    detailButton.textContent = isOpen ? "Hide Details" : "Details";
+    detailButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    const purgeButton = document.createElement("button");
+    purgeButton.type = "button";
+    purgeButton.className = "danger super-tenant-purge";
+    purgeButton.textContent = "Purge Dorm";
+    actionsCell.append(detailButton, purgeButton);
+
+    row.append(nameCell, residentsCell, adminsCell, rentersCell, activityCell, actionsCell);
+    tbody.appendChild(row);
+
+    const detailRow = document.createElement("tr");
+    detailRow.className = "super-tenant-detail";
+    detailRow.dataset.tenantId = String(tenantId);
+    detailRow.hidden = !isOpen;
+    const detailCell = document.createElement("td");
+    detailCell.colSpan = 6;
+
+    const detailCard = document.createElement("div");
+    detailCard.className = "super-detail-card";
+
+    const buildSection = (title, items, options = {}) => {
+      const section = document.createElement("section");
+      section.className = "super-detail-section";
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      section.appendChild(heading);
+      const list = document.createElement("ul");
+      list.className = options.type === "resident" ? "super-resident-list" : "super-account-list";
+      if (!items || !items.length) {
+        const emptyItem = document.createElement("li");
+        emptyItem.className = "empty-row-cell";
+        emptyItem.textContent = options.emptyMessage || "No records.";
+        list.appendChild(emptyItem);
+      } else {
+        items.forEach((entry) => {
+          if (options.type === "resident") {
+            const item = document.createElement("li");
+            item.className = "super-resident-item";
+            item.textContent = entry.name;
+            list.appendChild(item);
+          } else {
+            list.appendChild(
+              buildAccountListItem({
+                account: entry,
+                type: options.type,
+              })
+            );
+          }
+        });
+      }
+      section.appendChild(list);
+      return section;
+    };
+
+    detailCard.appendChild(
+      buildSection("Admins", tenant.admins || [], { type: "admin", emptyMessage: "No admins linked." })
+    );
+    detailCard.appendChild(
+      buildSection("Renters", tenant.renters || [], { type: "renter", emptyMessage: "No renters linked." })
+    );
+    detailCard.appendChild(
+      buildSection("Residents", tenant.residents || [], {
+        type: "resident",
+        emptyMessage: "No residents recorded in this workspace.",
+      })
+    );
+
+    detailCell.appendChild(detailCard);
+    detailRow.appendChild(detailCell);
+    tbody.appendChild(detailRow);
+  });
+};
+
+const renderSuperAdmin = () => {
+  if (elements.superAdmin.root?.hidden) {
+    return;
+  }
+  renderSuperStats();
+  renderSuperTenants();
+};
+
 const render = () => {
+  if (sessionState.account?.role === "superadmin") {
+    renderSuperAdmin();
+    return;
+  }
+  renderWorkspace();
   renderUsers();
   renderTotals();
   renderPeriod();
@@ -1825,7 +2252,11 @@ const handleAuthRequest = async ({
         if (typeof onSuccess === "function") {
           onSuccess();
         }
-        await loadState();
+        if (sessionState.account?.role === "superadmin") {
+          await loadSuperState();
+        } else {
+          await loadState();
+        }
       }
     }
   } catch (error) {
@@ -1893,8 +2324,9 @@ if (elements.auth.forms?.registerAdmin) {
     event.preventDefault();
     const username = elements.auth.inputs.registerAdminUsername?.value.trim() || "";
     const password = elements.auth.inputs.registerAdminPassword?.value || "";
-    if (!username || !password) {
-      showAuthMessage("Username and password are required.");
+    const dormName = elements.auth.inputs.registerAdminDormName?.value.trim() || "";
+    if (!username || !password || !dormName) {
+      showAuthMessage("Username, password, and dorm name are required.");
       setAuthView("register-admin", { preserveValues: true, skipFocus: true });
       return;
     }
@@ -1902,7 +2334,7 @@ if (elements.auth.forms?.registerAdmin) {
     const submitButton = event.target.querySelector("button[type='submit']");
     await handleAuthRequest({
       endpoint: "/api/auth/register",
-      payload: { username, password },
+      payload: { username, password, dorm_name: dormName },
       submitButton,
       loadingText: "Registering...",
       onSuccess: () => {
@@ -1936,11 +2368,14 @@ if (elements.auth.forms?.registerRenter) {
   });
 }
 
-if (elements.userBar.logout) {
-  elements.userBar.logout.addEventListener("click", async () => {
+if (elements.logoutButtons?.length) {
+  const handleLogout = async () => {
     await logout();
     setInviteFeedback("", { target: "admin" });
     setInviteFeedback("", { target: "overlay" });
+  };
+  elements.logoutButtons.forEach((button) => {
+    button.addEventListener("click", handleLogout);
   });
 }
 
@@ -1953,6 +2388,60 @@ if (elements.adminInvite.copyBtn) {
 if (elements.adminInvite.rotateBtn) {
   elements.adminInvite.rotateBtn.addEventListener("click", () => {
     rotateInviteLink();
+  });
+}
+
+if (elements.superAdmin.tableBody) {
+  elements.superAdmin.tableBody.addEventListener("click", async (event) => {
+    const detailButton = event.target.closest(".super-tenant-details");
+    const purgeButton = event.target.closest(".super-tenant-purge");
+    const removeAdminButton = event.target.closest(".super-remove-admin");
+    const removeRenterButton = event.target.closest(".super-remove-renter");
+
+    const detailRow = event.target.closest(".super-tenant-detail");
+    const headerRow = event.target.closest("tr[data-tenant-id]");
+    const contextRow = detailRow || headerRow;
+    const tenantId = contextRow ? Number(contextRow.dataset.tenantId) : NaN;
+
+    if (detailButton) {
+      if (Number.isFinite(tenantId)) {
+        toggleSuperTenantDetails(tenantId);
+      }
+      return;
+    }
+
+    if (purgeButton) {
+      if (Number.isFinite(tenantId)) {
+        const confirmed = window.confirm(
+          "This will permanently delete the dorm, its admins, renters, and stored data. Continue?"
+        );
+        if (confirmed) {
+          await deleteSuperTenant(tenantId);
+        }
+      }
+      return;
+    }
+
+    if (removeAdminButton) {
+      const accountId = Number(removeAdminButton.dataset.accountId);
+      if (Number.isFinite(accountId)) {
+        const confirmed = window.confirm("Remove this admin account?");
+        if (confirmed) {
+          await deleteSuperAdminAccount(accountId);
+        }
+      }
+      return;
+    }
+
+    if (removeRenterButton) {
+      const accountId = Number(removeRenterButton.dataset.accountId);
+      if (Number.isFinite(accountId)) {
+        const confirmed = window.confirm("Remove this renter account?");
+        if (confirmed) {
+          await deleteSuperRenterAccount(accountId);
+        }
+      }
+    }
   });
 }
 
@@ -2334,6 +2823,42 @@ if (elements.fixed.tableBody) {
   });
 }
 
+if (elements.workspace.form) {
+  elements.workspace.form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (sessionState.account?.role !== "admin") {
+      return;
+    }
+    setWorkspaceFeedback("");
+    const input = elements.workspace.nameInput;
+    const name = input?.value.trim() || "";
+    if (!name) {
+      setWorkspaceFeedback("Dorm name is required.", { error: true });
+      if (input) {
+        input.focus();
+      }
+      return;
+    }
+    const submitButton = elements.workspace.form.querySelector("button[type='submit']");
+    if (submitButton) {
+      submitButton.disabled = true;
+      submitButton.textContent = "Saving...";
+    }
+    try {
+      await updateWorkspaceName(name);
+      setWorkspaceFeedback("Dorm name saved.");
+    } catch (error) {
+      console.error("Failed to update workspace name:", error);
+      setWorkspaceFeedback(error.message || "Unable to update dorm name.", { error: true });
+    } finally {
+      if (submitButton) {
+        submitButton.disabled = false;
+        submitButton.textContent = "Save Name";
+      }
+    }
+  });
+}
+
 if (elements.billing.form) {
   elements.billing.form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2474,21 +2999,31 @@ const syncAdminForm = () => {
 const initializeApp = async () => {
   const params = new URLSearchParams(window.location.search);
   const inviteParam = params.get("invite");
+  let authenticated = false;
+
   if (inviteParam) {
     inviteTokenFromQuery = inviteParam;
     if (elements.auth.inputs.renterToken) {
       elements.auth.inputs.renterToken.value = inviteParam;
     }
+    currentAuthView = "register-renter";
     window.history.replaceState({}, document.title, window.location.pathname);
+    await logout();
+    authenticated = sessionState.authenticated;
+  } else {
+    authenticated = await refreshSession();
   }
 
   if (!currentAuthView) {
     currentAuthView = inviteTokenFromQuery ? "register-renter" : "menu";
   }
 
-  const authenticated = await refreshSession();
   if (authenticated) {
-    await loadState();
+    if (sessionState.account?.role === "superadmin") {
+      await loadSuperState();
+    } else {
+      await loadState();
+    }
   } else if (inviteTokenFromQuery) {
     setAuthView("register-renter", { preserveValues: true });
     if (elements.auth.inputs.renterToken) {
