@@ -42,22 +42,22 @@ const appState = {
 const superState = {
   tenants: [],
   admins: [],
-  renters: [],
+  residents: [],
   stats: {
     tenant_count: 0,
     admin_count: 0,
-    renter_count: 0,
+    resident_count: 0,
   },
 };
 
 const resetSuperState = () => {
   superState.tenants = [];
   superState.admins = [];
-  superState.renters = [];
+  superState.residents = [];
   superState.stats = {
     tenant_count: 0,
     admin_count: 0,
-    renter_count: 0,
+    resident_count: 0,
   };
   openSuperDetails.clear();
 };
@@ -267,8 +267,10 @@ const elements = {
       renterToken: document.getElementById("register-renter-token"),
       renterUsername: document.getElementById("register-renter-username"),
       renterPassword: document.getElementById("register-renter-password"),
+      loginAdminDormName: document.getElementById("login-admin-dorm-name"),
       loginAdminUsername: document.getElementById("login-admin-username"),
       loginAdminPassword: document.getElementById("login-admin-password"),
+      loginRenterDormName: document.getElementById("login-renter-dorm-name"),
       loginRenterUsername: document.getElementById("login-renter-username"),
       loginRenterPassword: document.getElementById("login-renter-password"),
       registerAdminUsername: document.getElementById("register-admin-username"),
@@ -295,7 +297,7 @@ const elements = {
     stats: {
       tenants: document.getElementById("super-total-tenants"),
       admins: document.getElementById("super-total-admins"),
-      renters: document.getElementById("super-total-renters"),
+      residents: document.getElementById("super-total-residents"),
     },
     tableBody: document.getElementById("super-tenant-body"),
     rowTemplate: document.getElementById("super-tenant-row-template"),
@@ -460,7 +462,9 @@ const setAuthView = (view, options = {}) => {
     menu.hidden = targetView !== "menu";
   }
 
-  showAuthMessage("");
+  if (!options.keepMessage) {
+    showAuthMessage("");
+  }
 
   if (!forms) {
     return;
@@ -897,7 +901,7 @@ const applyState = (data) => {
 const applySuperState = (data) => {
   superState.tenants = Array.isArray(data?.tenants) ? data.tenants : [];
   superState.admins = Array.isArray(data?.admins) ? data.admins : [];
-  superState.renters = Array.isArray(data?.renters) ? data.renters : [];
+  superState.residents = Array.isArray(data?.residents) ? data.residents : [];
   superState.stats = { ...superState.stats, ...(data?.stats ?? {}) };
   const validIds = new Set(superState.tenants.map((tenant) => tenant.id));
   Array.from(openSuperDetails).forEach((id) => {
@@ -1052,12 +1056,12 @@ const deleteSuperAdminAccount = async (accountId) => {
   }
 };
 
-const deleteSuperRenterAccount = async (accountId) => {
+const deleteSuperResidentAccount = async (accountId) => {
   try {
     await request(`/api/super/renters/${accountId}`, { method: "DELETE" });
     await loadSuperState();
   } catch (error) {
-    console.error("Failed to remove renter:", error);
+    console.error("Failed to remove resident:", error);
   }
 };
 
@@ -2012,8 +2016,10 @@ const renderSuperStats = () => {
   if (elements.superAdmin.stats.admins) {
     elements.superAdmin.stats.admins.textContent = String(stats.admin_count ?? superState.admins.length ?? 0);
   }
-  if (elements.superAdmin.stats.renters) {
-    elements.superAdmin.stats.renters.textContent = String(stats.renter_count ?? superState.renters.length ?? 0);
+  if (elements.superAdmin.stats.residents) {
+    elements.superAdmin.stats.residents.textContent = String(
+      stats.resident_count ?? superState.residents.length ?? 0
+    );
   }
 };
 
@@ -2038,9 +2044,12 @@ const buildAccountListItem = ({ account, type }) => {
   if (type === "admin") {
     removeButton.classList.add("super-remove-admin");
     removeButton.textContent = "Remove Admin";
+  } else if (type === "resident") {
+    removeButton.classList.add("super-remove-resident");
+    removeButton.textContent = "Remove Resident";
   } else {
-    removeButton.classList.add("super-remove-renter");
-    removeButton.textContent = "Remove Renter";
+    removeButton.classList.add("super-remove-account");
+    removeButton.textContent = "Remove";
   }
 
   item.appendChild(removeButton);
@@ -2056,7 +2065,7 @@ const renderSuperTenants = () => {
   if (!superState.tenants.length) {
     const emptyRow = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 6;
+    cell.colSpan = 5;
     cell.textContent = "No dorm workspaces registered yet.";
     cell.classList.add("empty-row-cell");
     emptyRow.appendChild(cell);
@@ -2078,15 +2087,11 @@ const renderSuperTenants = () => {
 
     const residentsCell = document.createElement("td");
     residentsCell.className = "numeric-cell";
-    residentsCell.textContent = String(tenant.resident_count ?? 0);
+    residentsCell.textContent = String(tenant.resident_count ?? tenant.residents?.length ?? 0);
 
     const adminsCell = document.createElement("td");
     adminsCell.className = "numeric-cell";
     adminsCell.textContent = String(tenant.admin_count ?? (tenant.admins?.length ?? 0));
-
-    const rentersCell = document.createElement("td");
-    rentersCell.className = "numeric-cell";
-    rentersCell.textContent = String(tenant.renter_count ?? (tenant.renters?.length ?? 0));
 
     const activityCell = document.createElement("td");
     activityCell.textContent = formatDateTime(tenant.last_active_at);
@@ -2104,7 +2109,7 @@ const renderSuperTenants = () => {
     purgeButton.textContent = "Purge Dorm";
     actionsCell.append(detailButton, purgeButton);
 
-    row.append(nameCell, residentsCell, adminsCell, rentersCell, activityCell, actionsCell);
+    row.append(nameCell, residentsCell, adminsCell, activityCell, actionsCell);
     tbody.appendChild(row);
 
     const detailRow = document.createElement("tr");
@@ -2112,7 +2117,7 @@ const renderSuperTenants = () => {
     detailRow.dataset.tenantId = String(tenantId);
     detailRow.hidden = !isOpen;
     const detailCell = document.createElement("td");
-    detailCell.colSpan = 6;
+    detailCell.colSpan = 5;
 
     const detailCard = document.createElement("div");
     detailCard.className = "super-detail-card";
@@ -2124,7 +2129,7 @@ const renderSuperTenants = () => {
       heading.textContent = title;
       section.appendChild(heading);
       const list = document.createElement("ul");
-      list.className = options.type === "resident" ? "super-resident-list" : "super-account-list";
+      list.className = "super-account-list";
       if (!items || !items.length) {
         const emptyItem = document.createElement("li");
         emptyItem.className = "empty-row-cell";
@@ -2132,19 +2137,20 @@ const renderSuperTenants = () => {
         list.appendChild(emptyItem);
       } else {
         items.forEach((entry) => {
-          if (options.type === "resident") {
+          const isAccount = entry && typeof entry.username === "string";
+          if (!isAccount) {
             const item = document.createElement("li");
             item.className = "super-resident-item";
-            item.textContent = entry.name;
+            item.textContent = entry?.name || "Unnamed resident";
             list.appendChild(item);
-          } else {
-            list.appendChild(
-              buildAccountListItem({
-                account: entry,
-                type: options.type,
-              })
-            );
+            return;
           }
+          list.appendChild(
+            buildAccountListItem({
+              account: entry,
+              type: options.type,
+            })
+          );
         });
       }
       section.appendChild(list);
@@ -2155,12 +2161,9 @@ const renderSuperTenants = () => {
       buildSection("Admins", tenant.admins || [], { type: "admin", emptyMessage: "No admins linked." })
     );
     detailCard.appendChild(
-      buildSection("Renters", tenant.renters || [], { type: "renter", emptyMessage: "No renters linked." })
-    );
-    detailCard.appendChild(
       buildSection("Residents", tenant.residents || [], {
         type: "resident",
-        emptyMessage: "No residents recorded in this workspace.",
+        emptyMessage: "No resident accounts linked.",
       })
     );
 
@@ -2225,6 +2228,7 @@ const handleAuthRequest = async ({
   onSuccess,
   loadingText,
   deferPostAuth = false,
+  errorView,
 }) => {
   const originalText = submitButton?.textContent;
   if (submitButton) {
@@ -2261,12 +2265,18 @@ const handleAuthRequest = async ({
     }
   } catch (error) {
     console.error(`Authentication request failed for ${endpoint}:`, error);
-    showAuthMessage(error.message || "Request failed.");
-    if (payload.token) {
-      setAuthView("register-renter", { preserveValues: true, skipFocus: true });
+    let viewOptions = null;
+    if (errorView) {
+      viewOptions = { view: errorView, options: { preserveValues: true, skipFocus: true } };
+    } else if (payload.token) {
+      viewOptions = { view: "register-renter", options: { preserveValues: true, skipFocus: true } };
     } else if (payload.username && endpoint.includes("register")) {
-      setAuthView("register-admin", { preserveValues: true, skipFocus: true });
+      viewOptions = { view: "register-admin", options: { preserveValues: true, skipFocus: true } };
     }
+    if (viewOptions) {
+      setAuthView(viewOptions.view, { ...viewOptions.options, keepMessage: true });
+    }
+    showAuthMessage(error.message || "Request failed.");
   } finally {
     if (submitButton) {
       submitButton.disabled = false;
@@ -2280,20 +2290,26 @@ const handleAuthRequest = async ({
 if (elements.auth.forms?.loginAdmin) {
   elements.auth.forms.loginAdmin.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const dormName = elements.auth.inputs.loginAdminDormName?.value.trim() || "";
     const username = elements.auth.inputs.loginAdminUsername?.value.trim() || "";
     const password = elements.auth.inputs.loginAdminPassword?.value || "";
     if (!username || !password) {
+      setAuthView("login-admin", { preserveValues: true, skipFocus: true, keepMessage: true });
       showAuthMessage("Username and password are required.");
-      setAuthView("login-admin", { preserveValues: true, skipFocus: true });
       return;
     }
     showAuthMessage("");
     const submitButton = event.target.querySelector("button[type='submit']");
+    const payload = { username, password };
+    if (dormName) {
+      payload.dorm_name = dormName;
+    }
     await handleAuthRequest({
       endpoint: "/api/auth/login",
-      payload: { username, password },
+      payload,
       submitButton,
       loadingText: "Logging in...",
+      errorView: "login-admin",
     });
   });
 }
@@ -2301,20 +2317,26 @@ if (elements.auth.forms?.loginAdmin) {
 if (elements.auth.forms?.loginRenter) {
   elements.auth.forms.loginRenter.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const dormName = elements.auth.inputs.loginRenterDormName?.value.trim() || "";
     const username = elements.auth.inputs.loginRenterUsername?.value.trim() || "";
     const password = elements.auth.inputs.loginRenterPassword?.value || "";
     if (!username || !password) {
+      setAuthView("login-renter", { preserveValues: true, skipFocus: true, keepMessage: true });
       showAuthMessage("Username and password are required.");
-      setAuthView("login-renter", { preserveValues: true, skipFocus: true });
       return;
     }
     showAuthMessage("");
     const submitButton = event.target.querySelector("button[type='submit']");
+    const payload = { username, password };
+    if (dormName) {
+      payload.dorm_name = dormName;
+    }
     await handleAuthRequest({
       endpoint: "/api/auth/login",
-      payload: { username, password },
+      payload,
       submitButton,
       loadingText: "Logging in...",
+      errorView: "login-renter",
     });
   });
 }
@@ -2326,8 +2348,8 @@ if (elements.auth.forms?.registerAdmin) {
     const password = elements.auth.inputs.registerAdminPassword?.value || "";
     const dormName = elements.auth.inputs.registerAdminDormName?.value.trim() || "";
     if (!username || !password || !dormName) {
+      setAuthView("register-admin", { preserveValues: true, skipFocus: true, keepMessage: true });
       showAuthMessage("Username, password, and dorm name are required.");
-      setAuthView("register-admin", { preserveValues: true, skipFocus: true });
       return;
     }
     showAuthMessage("");
@@ -2341,6 +2363,7 @@ if (elements.auth.forms?.registerAdmin) {
         showInviteOverlay();
       },
       deferPostAuth: true,
+      errorView: "register-admin",
     });
   });
 }
@@ -2353,8 +2376,8 @@ if (elements.auth.forms?.registerRenter) {
     const username = elements.auth.inputs.renterUsername?.value.trim() || "";
     const password = elements.auth.inputs.renterPassword?.value || "";
     if (!token || !username || !password) {
+      setAuthView("register-renter", { preserveValues: true, skipFocus: true, keepMessage: true });
       showAuthMessage("Invite token, username, and password are required.");
-      setAuthView("register-renter", { preserveValues: true, skipFocus: true });
       return;
     }
     showAuthMessage("");
@@ -2364,6 +2387,7 @@ if (elements.auth.forms?.registerRenter) {
       payload: { token, username, password },
       submitButton,
       loadingText: "Creating account...",
+      errorView: "register-renter",
     });
   });
 }
@@ -2396,7 +2420,7 @@ if (elements.superAdmin.tableBody) {
     const detailButton = event.target.closest(".super-tenant-details");
     const purgeButton = event.target.closest(".super-tenant-purge");
     const removeAdminButton = event.target.closest(".super-remove-admin");
-    const removeRenterButton = event.target.closest(".super-remove-renter");
+    const removeResidentButton = event.target.closest(".super-remove-resident");
 
     const detailRow = event.target.closest(".super-tenant-detail");
     const headerRow = event.target.closest("tr[data-tenant-id]");
@@ -2413,7 +2437,7 @@ if (elements.superAdmin.tableBody) {
     if (purgeButton) {
       if (Number.isFinite(tenantId)) {
         const confirmed = window.confirm(
-          "This will permanently delete the dorm, its admins, renters, and stored data. Continue?"
+          "This will permanently delete the dorm, its admins, residents, and stored data. Continue?"
         );
         if (confirmed) {
           await deleteSuperTenant(tenantId);
@@ -2433,12 +2457,12 @@ if (elements.superAdmin.tableBody) {
       return;
     }
 
-    if (removeRenterButton) {
-      const accountId = Number(removeRenterButton.dataset.accountId);
+    if (removeResidentButton) {
+      const accountId = Number(removeResidentButton.dataset.accountId);
       if (Number.isFinite(accountId)) {
-        const confirmed = window.confirm("Remove this renter account?");
+        const confirmed = window.confirm("Remove this resident account?");
         if (confirmed) {
-          await deleteSuperRenterAccount(accountId);
+          await deleteSuperResidentAccount(accountId);
         }
       }
     }

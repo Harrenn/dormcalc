@@ -436,6 +436,19 @@ section h2 {
   font-weight: 600;
 }
 
+.total-card.super-card {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+.total-card.super-card .label {
+  color: rgba(248, 250, 252, 0.75);
+}
+
+.total-card.super-card .value {
+  color: #f8fafc;
+}
+
 .controls form {
   display: grid;
   gap: 1rem;

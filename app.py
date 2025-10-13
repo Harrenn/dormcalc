@@ -183,13 +183,17 @@ def normalise_workspace_name(name: Optional[str], tenant_id: int) -> str:
 def create_tenant(name: Optional[str] = None) -> Dict[str, object]:
   global next_tenant_id
   tenant_id = next_tenant_id
+  resolved_name = normalise_workspace_name(name, tenant_id)
+  lookup = normalise_workspace_key(resolved_name)
+  if lookup and get_tenant_by_name(resolved_name):
+    raise ValueError("Dorm name already in use.")
   next_tenant_id += 1
   tenant_state = make_default_tenant_state()
   tenant_record = {
     "id": tenant_id,
     "state": tenant_state,
     "invite_token": generate_invite_token(),
-    "name": normalise_workspace_name(name, tenant_id),
+    "name": resolved_name,
   }
   tenants[tenant_id] = tenant_record
   get_tenant_upload_folder(tenant_id)
@@ -222,11 +226,18 @@ def rotate_invite_token(tenant: Dict[str, object]) -> str:
   return token
 
 
-def get_account_by_username(username: str) -> Optional[Account]:
+def get_account_by_username(
+  username: str, tenant_id: Optional[int] = None, role: Optional[str] = None
+) -> Optional[Account]:
   lowered = username.strip().lower()
   for account in accounts.values():
-    if account.username.lower() == lowered:
-      return account
+    if account.username.lower() != lowered:
+      continue
+    if tenant_id is not None and account.tenant_id != tenant_id:
+      continue
+    if role and account.role != role:
+      continue
+    return account
   return None
 
 
@@ -235,6 +246,28 @@ def get_tenant_by_token(token: str) -> Optional[Dict[str, object]]:
     return None
   for tenant in tenants.values():
     if tenant.get("invite_token") == token:
+      return tenant
+  return None
+
+
+def normalise_workspace_key(name: Optional[str]) -> str:
+  if not name:
+    return ""
+  resolved = name.strip()
+  if not resolved:
+    return ""
+  if len(resolved) > MAX_WORKSPACE_NAME_LENGTH:
+    resolved = resolved[:MAX_WORKSPACE_NAME_LENGTH].strip()
+  return resolved.lower()
+
+
+def get_tenant_by_name(name: Optional[str]) -> Optional[Dict[str, object]]:
+  lookup = normalise_workspace_key(name)
+  if not lookup:
+    return None
+  for tenant in tenants.values():
+    existing = normalise_workspace_key(tenant.get("name"))
+    if existing == lookup:
       return tenant
   return None
 
@@ -407,13 +440,11 @@ def tenant_overview(tenant: Dict[str, object]) -> Dict[str, object]:
     for account in accounts.values()
     if account.role == "admin" and account.tenant_id == tenant_id
   ]
-  renters = [
+  resident_accounts = [
     serialise_account_summary(account)
     for account in accounts.values()
     if account.role == "renter" and account.tenant_id == tenant_id
   ]
-  state = tenant["state"]
-  residents = [{"id": user.id, "name": user.name} for user in state["users"]]
   last_active_dt = None
   for account in accounts.values():
     if account.tenant_id == tenant_id and account.last_active_at:
@@ -423,12 +454,10 @@ def tenant_overview(tenant: Dict[str, object]) -> Dict[str, object]:
   return {
     "id": tenant_id,
     "name": tenant_name,
-    "resident_count": len(residents),
-    "residents": residents,
+    "resident_count": len(resident_accounts),
+    "residents": resident_accounts,
     "admins": admins,
-    "renters": renters,
     "admin_count": len(admins),
-    "renter_count": len(renters),
     "last_active_at": last_active_dt.isoformat() if last_active_dt else None,
   }
 
@@ -639,18 +668,39 @@ def api_auth_login():
   payload = request.get_json(silent=True) or {}
   username = (payload.get("username") or "").strip()
   password = payload.get("password") or ""
+  dorm_name = (payload.get("dorm_name") or "").strip()
 
   if not username or not password:
     return jsonify({"message": "Username and password are required."}), 400
 
-  account = get_account_by_username(username)
-  if account is None or not check_password_hash(account.password_hash, password):
-    return jsonify({"message": "Invalid credentials."}), 401
+  account: Optional[Account] = None
+  tenant: Optional[Dict[str, object]] = None
+
+  if not dorm_name:
+    account = get_account_by_username(username, role="superadmin")
+    if account is None:
+      return jsonify({"message": "Dorm name is required."}), 400
+    if not check_password_hash(account.password_hash, password):
+      return jsonify({"message": "Invalid credentials."}), 401
+  else:
+    tenant = get_tenant_by_name(dorm_name)
+    if tenant is None:
+      return jsonify({"message": "Invalid credentials."}), 401
+    account = get_account_by_username(username, tenant_id=tenant["id"])
+    if account is None or not check_password_hash(account.password_hash, password):
+      return jsonify({"message": "Invalid credentials."}), 401
+
+  if account.role != "superadmin":
+    if tenant is None:
+      tenant = tenants.get(account.tenant_id)
+    if tenant is None:
+      return jsonify({"message": "Tenant not found."}), 404
+  else:
+    tenant = tenants.get(account.tenant_id)
 
   session["account_id"] = account.id
   account.last_active_at = datetime.utcnow()
   persist_state()
-  tenant = tenants.get(account.tenant_id)
   response: Dict[str, object] = {"account": account_payload(account)}
   if account.role == "admin" and tenant:
     response["invite_token"] = tenant.get("invite_token")
@@ -670,10 +720,13 @@ def api_auth_register():
   if len(dorm_name) > MAX_WORKSPACE_NAME_LENGTH:
     return jsonify({"message": "Dorm name is too long."}), 400
 
-  if get_account_by_username(username):
-    return jsonify({"message": "Username already taken."}), 409
+  if get_tenant_by_name(dorm_name):
+    return jsonify({"message": "Dorm name already in use."}), 409
 
-  tenant = create_tenant(dorm_name)
+  try:
+    tenant = create_tenant(dorm_name)
+  except ValueError:
+    return jsonify({"message": "Dorm name already in use."}), 409
   account = create_account(username, password, "admin", tenant["id"])
   session["account_id"] = account.id
   response: Dict[str, object] = {
@@ -698,7 +751,7 @@ def api_auth_renter_register():
   if tenant is None:
     return jsonify({"message": "Invalid invite token."}), 400
 
-  if get_account_by_username(username):
+  if get_account_by_username(username, tenant_id=tenant["id"]):
     return jsonify({"message": "Username already taken."}), 409
 
   account = create_account(username, password, "renter", tenant["id"])
@@ -725,16 +778,16 @@ def build_superadmin_state() -> Dict[str, object]:
   tenant_entries = [tenant_overview(tenant) for tenant in tenants.values()]
   tenant_entries.sort(key=lambda entry: entry["name"].lower())
   admin_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("admin")]
-  renter_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("renter")]
+  resident_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("renter")]
   stats = {
     "tenant_count": len(tenant_entries),
     "admin_count": len(admin_accounts),
-    "renter_count": len(renter_accounts),
+    "resident_count": len(resident_accounts),
   }
   return {
     "tenants": tenant_entries,
     "admins": admin_accounts,
-    "renters": renter_accounts,
+    "residents": resident_accounts,
     "stats": stats,
   }
 
@@ -807,7 +860,11 @@ def api_workspace_update():
   if len(name) > MAX_WORKSPACE_NAME_LENGTH:
     return jsonify({"message": "Dorm name is too long."}), 400
   tenant = g.tenant
-  tenant["name"] = normalise_workspace_name(name, tenant["id"])
+  resolved_name = normalise_workspace_name(name, tenant["id"])
+  existing = get_tenant_by_name(resolved_name)
+  if existing and existing.get("id") != tenant["id"]:
+    return jsonify({"message": "Dorm name already in use."}), 409
+  tenant["name"] = resolved_name
   persist_state()
   return jsonify({"workspace": {"name": tenant["name"]}})
 
@@ -1210,10 +1267,8 @@ def clear_superadmin_accounts() -> int:
 
 
 def set_superadmin_credentials(username: str, password: str) -> Account:
-  existing = get_account_by_username(username)
-  if existing and existing.role != "superadmin":
-    raise ValueError("Username already exists for another account.")
-  if existing and existing.role == "superadmin":
+  existing = get_account_by_username(username, role="superadmin")
+  if existing:
     existing.password_hash = generate_password_hash(password, method="pbkdf2:sha256")
     existing.last_active_at = datetime.utcnow()
     persist_state()

@@ -19,6 +19,11 @@
 
       <form id="login-admin-form" class="auth-form" data-view="login-admin" hidden>
         <div class="form-row">
+          <label for="login-admin-dorm-name">Dorm name</label>
+          <input id="login-admin-dorm-name" name="dorm_name" type="text" autocomplete="organization">
+          <p class="auth-hint">Admins and renters should enter the dorm name exactly as registered. Super admins can leave this blank.</p>
+        </div>
+        <div class="form-row">
           <label for="login-admin-username">Username</label>
           <input id="login-admin-username" name="username" type="text" autocomplete="username" required>
         </div>
@@ -33,6 +38,11 @@
       </form>
 
       <form id="login-renter-form" class="auth-form" data-view="login-renter" hidden>
+        <div class="form-row">
+          <label for="login-renter-dorm-name">Dorm name</label>
+          <input id="login-renter-dorm-name" name="dorm_name" type="text" autocomplete="organization" required>
+          <p class="auth-hint">Enter the dorm name exactly as your admin shared it so you land in the right workspace.</p>
+        </div>
         <div class="form-row">
           <label for="login-renter-username">Username</label>
           <input id="login-renter-username" name="username" type="text" autocomplete="username" required>
@@ -51,6 +61,7 @@
         <div class="form-row">
           <label for="register-admin-dorm-name">Dorm name</label>
           <input id="register-admin-dorm-name" name="dorm_name" type="text" maxlength="120" placeholder="e.g., Riverside Dorm 5F" required>
+          <p class="auth-hint">Choose a unique dorm name. If the name is already taken you’ll see a warning and can pick a different one.</p>
         </div>
         <div class="form-row">
           <label for="register-admin-username">Username</label>
@@ -204,16 +215,7 @@
     <section class="tab-panel" id="about-panel" role="tabpanel" aria-labelledby="tab-about" hidden>
       <article class="about-content">
         <h2>About Dorm Expense Tracker</h2>
-        <p>This workspace keeps each dorm admin’s data separate and splits common costs fairly among residents. Use this guide to understand the roles, tabs, and bill calculation rules.</p>
-
-        <section>
-          <h3>User Roles &amp; Access</h3>
-          <ul>
-            <li><strong>Admin</strong> – registers the dorm, manages residents, expenses, fixed utilities, billing periods, and can delete data.</li>
-            <li><strong>Renter</strong> – logs in from the admin’s invite link; can review totals, upload receipts, and adjust their own abono credits but cannot change shared settings.</li>
-          </ul>
-          <p>Admins can invite renters by copying the link in the header; renters enter that invite token during “Create Renter Account”.</p>
-        </section>
+        <p>Hi dormers/students! Ako nga pala si Haren. Ginawa ko ’tong app na Dorm Expense Tracker para mas madali ang hatian sa dorm kasi aminin natin, ang hirap magcompute kaya HAHAHA. Gamitin n’yo lang hangga’t trip n’yo. Feel free to share any feedback!</p>
 
         <section>
           <h3>Tabs Overview</h3>
@@ -574,8 +576,8 @@
           <span class="value" id="super-total-admins">0</span>
         </div>
         <div class="total-card super-card">
-          <span class="label">Renters</span>
-          <span class="value" id="super-total-renters">0</span>
+          <span class="label">Residents</span>
+          <span class="value" id="super-total-residents">0</span>
         </div>
       </div>
     </section>
@@ -583,7 +585,7 @@
     <section class="super-table-section" aria-labelledby="super-tenants-heading">
       <div class="section-header">
         <h2 id="super-tenants-heading">Dorm Workspaces</h2>
-        <p class="panel-helper">Review admins and renters per workspace, or purge data when needed.</p>
+        <p class="panel-helper">Review admins and resident accounts per workspace, or purge data when needed.</p>
       </div>
       <div class="table-wrapper">
         <table>
@@ -592,7 +594,6 @@
               <th scope="col">Dorm</th>
               <th scope="col">Residents</th>
               <th scope="col">Admins</th>
-              <th scope="col">Renters</th>
               <th scope="col">Last Activity</th>
               <th scope="col" class="actions-col">Actions</th>
             </tr>
