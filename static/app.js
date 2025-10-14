@@ -89,6 +89,29 @@ const feedbackState = {
 const getUserById = (id) =>
   appState.users.find((user) => user.id === id) || null;
 
+const getResidentUserId = () => {
+  const raw = sessionState.account?.resident_user_id;
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const canManageUser = (user) => {
+  if (!user) {
+    return false;
+  }
+  const role = sessionState.account?.role;
+  if (role === "admin") {
+    return true;
+  }
+  if (role === "renter") {
+    return getResidentUserId() === user.id;
+  }
+  return false;
+};
+
 const formatCurrency = (value) =>
   new Intl.NumberFormat("en-PH", {
     style: "currency",
@@ -1063,24 +1086,28 @@ const refreshSession = async () => {
 };
 
 const ensureSelectedAwayUser = () => {
-  const ids = appState.users.map((user) => user.id);
-  if (!ids.length) {
+  const manageableIds = appState.users
+    .filter((user) => canManageUser(user))
+    .map((user) => user.id);
+  if (!manageableIds.length) {
     selectedAwayUserId = null;
     return;
   }
-  if (!ids.includes(selectedAwayUserId)) {
-    selectedAwayUserId = ids[0];
+  if (!manageableIds.includes(selectedAwayUserId)) {
+    selectedAwayUserId = manageableIds[0];
   }
 };
 
 const ensureSelectedAbonoUser = () => {
-  const ids = appState.users.map((user) => user.id);
-  if (!ids.length) {
+  const manageableIds = appState.users
+    .filter((user) => canManageUser(user))
+    .map((user) => user.id);
+  if (!manageableIds.length) {
     selectedAbonoUserId = null;
     return;
   }
-  if (!ids.includes(selectedAbonoUserId)) {
-    selectedAbonoUserId = ids[0];
+  if (!manageableIds.includes(selectedAbonoUserId)) {
+    selectedAbonoUserId = manageableIds[0];
   }
 };
 
@@ -1182,6 +1209,9 @@ const deleteUser = async (id) => {
 };
 
 const createAwayRecord = async ({ userId, start, end }) => {
+  if (!canManageUser(getUserById(userId))) {
+    return;
+  }
   try {
     await request("/api/outs", {
       method: "POST",
@@ -1194,6 +1224,10 @@ const createAwayRecord = async ({ userId, start, end }) => {
 };
 
 const updateAwayRecord = async (recordId, values) => {
+  const user = getAwayUser();
+  if (!canManageUser(user)) {
+    return;
+  }
   try {
     await request(`/api/outs/${recordId}`, {
       method: "PATCH",
@@ -1207,6 +1241,10 @@ const updateAwayRecord = async (recordId, values) => {
 };
 
 const deleteAwayRecord = async (recordId) => {
+  const user = getAwayUser();
+  if (!canManageUser(user)) {
+    return;
+  }
   try {
     await request(`/api/outs/${recordId}`, { method: "DELETE" });
     await loadState();
@@ -1216,6 +1254,9 @@ const deleteAwayRecord = async (recordId) => {
 };
 
 const uploadReceipt = async (userId, file) => {
+  if (!canManageUser(getUserById(userId))) {
+    return;
+  }
   const formData = new FormData();
   formData.append("file", file);
 
@@ -1242,6 +1283,9 @@ const uploadReceipt = async (userId, file) => {
 };
 
 const deleteReceipt = async (userId, receiptId) => {
+  if (!canManageUser(getUserById(userId))) {
+    return;
+  }
   try {
     const options = {
       method: "DELETE",
@@ -1301,6 +1345,10 @@ const toggleSuperTenantDetails = (tenantId) => {
 };
 
 const updateAbonoCredit = async (userId, value) => {
+  const targetUser = getUserById(userId);
+  if (!canManageUser(targetUser)) {
+    return;
+  }
   const payload = {};
   if (typeof value === "number") {
     payload.various_credit = value;
@@ -1702,7 +1750,8 @@ const renderAwaySelector = () => {
   }
 
   select.innerHTML = "";
-  if (!appState.users.length) {
+  const manageableUsers = appState.users.filter((user) => canManageUser(user));
+  if (!manageableUsers.length) {
     select.disabled = true;
     select.value = "";
     if (addForm) {
@@ -1713,23 +1762,34 @@ const renderAwaySelector = () => {
     return;
   }
 
-  select.disabled = false;
-  if (addForm) {
-    addForm.classList.remove("disabled");
+  let selectedId = selectedAwayUserId;
+  if (!selectedId || !manageableUsers.some((user) => user.id === selectedId)) {
+    selectedId = manageableUsers[0].id;
+    selectedAwayUserId = selectedId;
   }
 
-  appState.users.forEach((user) => {
+  const isAdmin = sessionState.account?.role === "admin";
+  select.disabled = !isAdmin || manageableUsers.length <= 1;
+
+  manageableUsers.forEach((user) => {
     const option = document.createElement("option");
     option.value = String(user.id);
     option.textContent = user.name;
-    if (user.id === selectedAwayUserId) {
-      option.selected = true;
-    }
+    option.selected = user.id === selectedId;
     select.appendChild(option);
   });
 
   if (selectedAwayUserId) {
     select.value = String(selectedAwayUserId);
+  }
+
+  if (addForm) {
+    if (!selectedAwayUserId) {
+      addForm.reset();
+      addForm.classList.add("disabled");
+    } else {
+      addForm.classList.remove("disabled");
+    }
   }
 };
 
@@ -1777,14 +1837,15 @@ const renderAwayTable = () => {
 
   tableBody.innerHTML = "";
   const user = getAwayUser();
+  const canManage = canManageUser(user);
 
   if (startInput) {
     setPeriodConstraints(startInput);
-    startInput.disabled = !user;
+    startInput.disabled = !user || !canManage;
   }
   if (endInput) {
     setPeriodConstraints(endInput);
-    endInput.disabled = !user;
+    endInput.disabled = !user || !canManage;
   }
 
   const noUserSelected = !user;
@@ -1804,7 +1865,13 @@ const renderAwayTable = () => {
 
   emptyMessage.hidden = true;
   records.forEach((record) => {
-    tableBody.appendChild(createAwayRow(record));
+    const row = createAwayRow(record);
+    if (!canManage) {
+      row.querySelectorAll("input, button").forEach((control) => {
+        control.disabled = true;
+      });
+    }
+    tableBody.appendChild(row);
   });
 };
 
@@ -1897,7 +1964,8 @@ const renderAbonoPanel = () => {
 
   select.innerHTML = "";
 
-  if (!appState.users.length) {
+  const manageableUsers = appState.users.filter((user) => canManageUser(user));
+  if (!manageableUsers.length) {
     select.disabled = true;
     select.value = "";
     selectedAbonoUserId = null;
@@ -1905,17 +1973,22 @@ const renderAbonoPanel = () => {
     return;
   }
 
-  select.disabled = false;
+  let selectedId = selectedAbonoUserId;
+  if (!selectedId || !manageableUsers.some((user) => user.id === selectedId)) {
+    selectedId = manageableUsers[0].id;
+    selectedAbonoUserId = selectedId;
+  }
 
-  appState.users.forEach((user) => {
+  manageableUsers.forEach((user) => {
     const option = document.createElement("option");
     option.value = String(user.id);
     option.textContent = user.name;
-    if (user.id === selectedAbonoUserId) {
-      option.selected = true;
-    }
+    option.selected = user.id === selectedId;
     select.appendChild(option);
   });
+
+  const isAdmin = sessionState.account?.role === "admin";
+  select.disabled = !isAdmin || manageableUsers.length <= 1;
 
   const user = getAbonoUser();
 
@@ -1928,44 +2001,45 @@ const renderAbonoPanel = () => {
     select.value = String(selectedAbonoUserId);
   }
 
+  const canManage = canManageUser(user);
+
   const generalAmount = Number(user.abono_credit ?? user.various_credit ?? 0);
   const mineralAmount = Number(user.mineral_credit ?? 0);
   const rentShare = Number(user.rent_share ?? 0);
   const utilitiesTotal = Number(user.share?.total ?? 0);
   const grossTotal = user.gross_total ?? utilitiesTotal + rentShare;
 
-  select.disabled = false;
   if (creditForm) {
-    creditForm.classList.remove("disabled");
+    creditForm.classList.toggle("disabled", !canManage);
     const submit = creditForm.querySelector("button[type='submit']");
     if (submit) {
-      submit.disabled = false;
+      submit.disabled = !canManage;
     }
   }
   if (creditInput) {
-    creditInput.disabled = false;
+    creditInput.disabled = !canManage;
     creditInput.value = generalAmount ? String(generalAmount) : "";
   }
   if (mineralForm) {
-    mineralForm.classList.remove("disabled");
+    mineralForm.classList.toggle("disabled", !canManage);
     const submit = mineralForm.querySelector("button[type='submit']");
     if (submit) {
-      submit.disabled = false;
+      submit.disabled = !canManage;
     }
   }
   if (mineralInput) {
-    mineralInput.disabled = false;
+    mineralInput.disabled = !canManage;
     mineralInput.value = mineralAmount ? String(mineralAmount) : "";
   }
   if (uploadForm) {
-    uploadForm.classList.remove("disabled");
+    uploadForm.classList.toggle("disabled", !canManage);
     const submit = uploadForm.querySelector("button[type='submit']");
     if (submit) {
-      submit.disabled = false;
+      submit.disabled = !canManage;
     }
   }
   if (uploadInput) {
-    uploadInput.disabled = false;
+    uploadInput.disabled = !canManage;
     uploadInput.value = "";
   }
 
@@ -2001,7 +2075,7 @@ const renderAbonoPanel = () => {
   if (receiptList) {
     if (hasReceipts) {
       renderReceiptList(receiptList, user.receipts, "No receipts uploaded yet.", {
-        showDelete: true,
+        showDelete: canManage,
       });
     } else {
       receiptList.innerHTML = "";
@@ -2923,7 +2997,12 @@ elements.tbody.addEventListener("submit", async (event) => {
 if (elements.away.select) {
   elements.away.select.addEventListener("change", (event) => {
     const value = Number(event.target.value);
-    selectedAwayUserId = Number.isFinite(value) && value > 0 ? value : null;
+    const candidate = getUserById(value);
+    if (candidate && canManageUser(candidate)) {
+      selectedAwayUserId = candidate.id;
+    } else {
+      selectedAwayUserId = getResidentUserId();
+    }
     renderAwayManager();
     renderAbonoPanel();
   });
@@ -2933,7 +3012,7 @@ if (elements.away.addForm) {
   elements.away.addForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = getAwayUser();
-    if (!user) {
+    if (!user || !canManageUser(user)) {
       return;
     }
 
@@ -2969,6 +3048,11 @@ if (elements.away.tableBody) {
       end: row.querySelector(".out-end")?.value || null,
     };
 
+    const user = getAwayUser();
+    if (!user || !canManageUser(user)) {
+      return;
+    }
+
     await updateAwayRecord(Number(row.dataset.recordId), payload);
   });
 
@@ -2980,6 +3064,10 @@ if (elements.away.tableBody) {
     if (!row) {
       return;
     }
+    const user = getAwayUser();
+    if (!user || !canManageUser(user)) {
+      return;
+    }
     await deleteAwayRecord(Number(row.dataset.recordId));
   });
 }
@@ -2987,7 +3075,12 @@ if (elements.away.tableBody) {
 if (elements.abono.select) {
   elements.abono.select.addEventListener("change", (event) => {
     const value = Number(event.target.value);
-    selectedAbonoUserId = Number.isFinite(value) && value > 0 ? value : null;
+    const candidate = getUserById(value);
+    if (candidate && canManageUser(candidate)) {
+      selectedAbonoUserId = candidate.id;
+    } else {
+      selectedAbonoUserId = getResidentUserId();
+    }
     renderAbonoPanel();
   });
 }
@@ -2996,7 +3089,7 @@ if (elements.abono.creditForm) {
   elements.abono.creditForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = getAbonoUser();
-    if (!user) {
+    if (!user || !canManageUser(user)) {
       return;
     }
 
@@ -3021,7 +3114,7 @@ if (elements.abono.mineralForm) {
   elements.abono.mineralForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = getAbonoUser();
-    if (!user) {
+    if (!user || !canManageUser(user)) {
       return;
     }
 
@@ -3046,7 +3139,7 @@ if (elements.abono.uploadForm) {
   elements.abono.uploadForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const user = getAbonoUser();
-    if (!user) {
+    if (!user || !canManageUser(user)) {
       return;
     }
 
@@ -3078,13 +3171,13 @@ if (elements.abono.receiptList) {
       return;
     }
 
-    const user = getAbonoUser();
-    if (!user) {
+    const receiptId = Number(button.dataset.receiptId);
+    if (!Number.isFinite(receiptId)) {
       return;
     }
 
-    const receiptId = Number(button.dataset.receiptId);
-    if (!Number.isFinite(receiptId)) {
+    const user = getAbonoUser();
+    if (!user || !canManageUser(user)) {
       return;
     }
 

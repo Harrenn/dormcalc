@@ -151,6 +151,7 @@ class Account:
   role: str  # "admin", "renter", or "superadmin"
   tenant_id: int
   last_active_at: Optional[datetime] = None
+  resident_user_id: Optional[int] = None
 
 
 storage_lock = Lock()
@@ -277,7 +278,15 @@ def create_tenant(name: Optional[str] = None) -> Dict[str, object]:
   return tenant_record
 
 
-def create_account(username: str, password: str, role: str, tenant_id: int) -> Account:
+def create_account(
+  username: str,
+  password: str,
+  role: str,
+  tenant_id: int,
+  resident_user_id: Optional[int] = None,
+  *,
+  persist_change: bool = True,
+) -> Account:
   global next_account_id
   account_id = next_account_id
   next_account_id += 1
@@ -289,9 +298,11 @@ def create_account(username: str, password: str, role: str, tenant_id: int) -> A
     role=role,
     tenant_id=tenant_id,
     last_active_at=now,
+    resident_user_id=resident_user_id,
   )
   accounts[account_id] = account
-  persist_state()
+  if persist_change:
+    persist_state()
   return account
 
 
@@ -355,6 +366,7 @@ def account_payload(account: Account) -> Dict[str, object]:
     "role": account.role,
     "tenant_id": account.tenant_id,
     "last_active_at": account.last_active_at.isoformat() if account.last_active_at else None,
+    "resident_user_id": account.resident_user_id,
   }
   return data
 
@@ -501,6 +513,7 @@ def serialise_account_summary(account: Account) -> Dict[str, object]:
     "role": account.role,
     "tenant_id": account.tenant_id,
     "last_active_at": account.last_active_at.isoformat() if account.last_active_at else None,
+    "resident_user_id": account.resident_user_id,
   }
 
 
@@ -671,6 +684,36 @@ def find_receipt(receipt_id: int) -> Optional[Receipt]:
   return None
 
 
+def resolve_account_resident(account: Account, tenant_state: Dict[str, object]) -> Optional[User]:
+  users: List[User] = tenant_state["users"]
+  if account.resident_user_id is not None:
+    for user in users:
+      if user.id == account.resident_user_id:
+        return user
+
+  username = account.username.strip().lower()
+  if not username:
+    return None
+
+  for user in users:
+    if user.name.strip().lower() == username:
+      account.resident_user_id = user.id
+      persist_state()
+      return user
+  return None
+
+
+def account_can_manage_user(account: Account, tenant_state: Dict[str, object], user_id: int) -> bool:
+  if account.role == "admin":
+    return True
+  if account.role != "renter":
+    return False
+  resident = resolve_account_resident(account, tenant_state)
+  if resident is None:
+    return False
+  return resident.id == user_id
+
+
 def parse_date_field(value: Optional[str]) -> Optional[date]:
   if value in (None, "", "null"):
     return None
@@ -834,9 +877,17 @@ def api_auth_renter_register():
   if get_account_by_username(username, tenant_id=tenant["id"]):
     return jsonify({"message": "Username already taken."}), 409
 
-  account = create_account(username, password, "renter", tenant["id"])
   tenant_state = tenant["state"]
-  new_user = User(id=tenant_state["next_id"], name=username)
+  new_user_id = tenant_state["next_id"]
+  account = create_account(
+    username,
+    password,
+    "renter",
+    tenant["id"],
+    resident_user_id=new_user_id,
+    persist_change=False,
+  )
+  new_user = User(id=new_user_id, name=username)
   tenant_state["next_id"] += 1
   tenant_state["users"].append(new_user)
   persist_state()
@@ -1059,7 +1110,12 @@ def api_users_update(user_id: int):
   if user is None:
     return jsonify({"message": "User not found."}), 404
 
-  is_admin = g.account.role == "admin"
+  account = g.account
+  tenant_state = get_state()
+  if not account_can_manage_user(account, tenant_state, user.id):
+    return jsonify({"message": "You can only modify your own records."}), 403
+
+  is_admin = account.role == "admin"
 
   if "name" in payload:
     if not is_admin:
@@ -1110,6 +1166,10 @@ def api_users_delete(user_id: int):
           (tenant_folder / Path(receipt.filename).name).unlink(missing_ok=True)
         except OSError:
           pass
+      tenant_id = g.tenant["id"] if g.tenant else g.account.tenant_id
+      for account in accounts.values():
+        if account.tenant_id == tenant_id and account.resident_user_id == user_id:
+          account.resident_user_id = None
       persist_state()
       return ("", 204)
 
@@ -1138,6 +1198,9 @@ def api_receipts_create(user_id: int):
     return jsonify({"message": "File type not allowed."}), 400
 
   tenant_state = get_state()
+  account = g.account
+  if not account_can_manage_user(account, tenant_state, user.id):
+    return jsonify({"message": "You can only manage your own records."}), 403
   tenant_id = g.account.tenant_id
   tenant_folder = get_tenant_upload_folder(tenant_id)
 
@@ -1175,12 +1238,16 @@ def api_receipts_delete(user_id: int, receipt_id: int):
   if receipt is None or receipt.user_id != user_id:
     return jsonify({"message": "Receipt not found."}), 404
 
+  tenant_state = get_state()
+  account = g.account
+  if not account_can_manage_user(account, tenant_state, user.id):
+    return jsonify({"message": "You can only manage your own records."}), 403
+
   try:
     (Path(app.config["UPLOAD_FOLDER"]) / receipt.filename).unlink(missing_ok=True)
   except OSError:
     pass
 
-  tenant_state = get_state()
   tenant_state["receipts"] = [entry for entry in tenant_state["receipts"] if entry.id != receipt_id]
   persist_state()
 
@@ -1217,9 +1284,15 @@ def api_outs_create():
   if not isinstance(user_id, int):
     return jsonify({"message": "A valid user_id is required."}), 400
 
-  user = find_user(user_id)
+  tenant_state = get_state()
+  users: List[User] = tenant_state["users"]
+  user = next((entry for entry in users if entry.id == user_id), None)
   if user is None:
     return jsonify({"message": "User not found."}), 404
+
+  account = g.account
+  if not account_can_manage_user(account, tenant_state, user.id):
+    return jsonify({"message": "You can only manage your own records."}), 403
 
   try:
     start = parse_date_field(payload.get("start"))
@@ -1232,7 +1305,6 @@ def api_outs_create():
   if error_message:
     return jsonify({"message": error_message}), 400
 
-  tenant_state = get_state()
   new_record = OutRecord(
     id=tenant_state["next_out_id"],
     user_id=user.id,
@@ -1253,6 +1325,11 @@ def api_outs_update(out_id: int):
   record = find_out(out_id)
   if record is None:
     return jsonify({"message": "Out record not found."}), 404
+
+  tenant_state = get_state()
+  account = g.account
+  if not account_can_manage_user(account, tenant_state, record.user_id):
+    return jsonify({"message": "You can only manage your own records."}), 403
 
   period_start, period_end = get_billing_period()
 
@@ -1291,6 +1368,9 @@ def api_outs_delete(out_id: int):
   records: List[OutRecord] = tenant_state["outs"]
   for index, record in enumerate(records):
     if record.id == out_id:
+      account = g.account
+      if not account_can_manage_user(account, tenant_state, record.user_id):
+        return jsonify({"message": "You can only manage your own records."}), 403
       records.pop(index)
       persist_state()
       return ("", 204)
@@ -1579,6 +1659,26 @@ def serialise_tenant_record(tenant: Dict[str, object]) -> Dict[str, object]:
   }
 
 
+def sync_resident_links() -> None:
+  updated = False
+  for account in accounts.values():
+    if account.role != "renter" or account.resident_user_id is not None:
+      continue
+    tenant = tenants.get(account.tenant_id)
+    if tenant is None:
+      continue
+    username = account.username.strip().lower()
+    if not username:
+      continue
+    for user in tenant["state"]["users"]:
+      if user.name.strip().lower() == username:
+        account.resident_user_id = user.id
+        updated = True
+        break
+  if updated:
+    save_storage()
+
+
 def save_storage() -> None:
   DATA_DIR.mkdir(parents=True, exist_ok=True)
   payload = {
@@ -1593,6 +1693,7 @@ def save_storage() -> None:
         "role": account.role,
         "tenant_id": account.tenant_id,
         "last_active_at": account.last_active_at.isoformat() if account.last_active_at else None,
+        "resident_user_id": account.resident_user_id,
       }
       for account in accounts.values()
     ],
@@ -1630,6 +1731,13 @@ def load_storage() -> None:
         last_active = datetime.fromisoformat(last_active_raw)
       except ValueError:
         last_active = None
+    resident_user_id_raw = entry.get("resident_user_id")
+    resident_user_id = None
+    if resident_user_id_raw is not None:
+      try:
+        resident_user_id = int(resident_user_id_raw)
+      except (TypeError, ValueError):
+        resident_user_id = None
     account = Account(
       id=int(entry["id"]),
       username=str(entry["username"]),
@@ -1637,6 +1745,7 @@ def load_storage() -> None:
       role=str(entry.get("role", "renter")),
       tenant_id=int(entry["tenant_id"]),
       last_active_at=last_active,
+      resident_user_id=resident_user_id,
     )
     accounts[account.id] = account
 
@@ -1653,6 +1762,7 @@ def load_storage() -> None:
     get_tenant_upload_folder(tenant_id)
 
   feedback_entries = [deserialise_feedback_entry(entry) for entry in payload.get("feedbacks", [])]
+  sync_resident_links()
 
 
 def persist_state() -> None:
