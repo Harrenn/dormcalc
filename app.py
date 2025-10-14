@@ -5,6 +5,9 @@ import argparse
 import sys
 import shutil
 import getpass
+import hmac
+import os
+import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -17,15 +20,50 @@ from flask import Flask, jsonify, render_template, request, send_from_directory,
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-app = Flask(__name__)
-app.config["SECRET_KEY"] = "dormcalc-secret-key"
-
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "webp", "pdf"}
+ALLOWED_MIME_TYPES = {
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+}
 DATA_DIR = BASE_DIR / "data"
 STORAGE_FILE = DATA_DIR / "storage.json"
+MAX_FEEDBACK_LENGTH = 4000
+
+app = Flask(__name__)
+
+def resolve_secret_key() -> str:
+  env_key = os.environ.get("SECRET_KEY") or os.environ.get("FLASK_SECRET_KEY")
+  if env_key:
+    return env_key
+
+  DATA_DIR.mkdir(parents=True, exist_ok=True)
+  secret_path = DATA_DIR / ".secret_key"
+  if secret_path.exists():
+    key = secret_path.read_text(encoding="utf-8").strip()
+    if key:
+      return key
+
+  key = secrets.token_hex(32)
+  try:
+    secret_path.write_text(key, encoding="utf-8")
+    secret_path.chmod(0o600)
+  except OSError:
+    app.logger.warning("Unable to persist generated SECRET_KEY; using in-memory key for this run.")
+  return key
+
+
+app.config["SECRET_KEY"] = resolve_secret_key()
+
+app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
+app.config.setdefault("SESSION_COOKIE_SAMESITE", os.environ.get("SESSION_COOKIE_SAMESITE", "Lax"))
+secure_cookie_env = os.environ.get("SESSION_COOKIE_SECURE", "0").strip().lower()
+app.config.setdefault("SESSION_COOKIE_SECURE", secure_cookie_env in {"1", "true", "yes"})
 
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_FOLDER)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
@@ -34,6 +72,28 @@ CATEGORIES: tuple[str, ...] = ("water", "electric", "internet")
 EXPENSE_FIELDS: tuple[str, ...] = (*CATEGORIES, "rent")
 MAX_WORKSPACE_NAME_LENGTH = 120
 SUPERADMIN_TENANT_ID = 0
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def generate_csrf_token() -> str:
+  token = session.get("csrf_token")
+  if not token:
+    token = secrets.token_hex(32)
+    session["csrf_token"] = token
+  return token
+
+
+def validate_csrf_token() -> bool:
+  if request.method in SAFE_METHODS:
+    return True
+  expected = session.get("csrf_token")
+  provided = request.headers.get("X-CSRF-Token")
+  if not expected or not provided:
+    return False
+  try:
+    return hmac.compare_digest(expected, provided)
+  except TypeError:
+    return False
 
 
 @dataclass
@@ -70,6 +130,20 @@ class Receipt:
 
 
 @dataclass
+class Feedback:
+  id: int
+  account_id: int
+  tenant_id: Optional[int]
+  role: str
+  username: str
+  message: str
+  contact: Optional[str]
+  context: Optional[str]
+  workspace_name: Optional[str]
+  created_at: datetime
+
+
+@dataclass
 class Account:
   id: int
   username: str
@@ -84,6 +158,8 @@ accounts: Dict[int, Account] = {}
 tenants: Dict[int, Dict[str, object]] = {}
 next_account_id = 1
 next_tenant_id = 1
+feedback_entries: List[Feedback] = []
+next_feedback_id = 1
 
 
 def generate_invite_token() -> str:
@@ -92,14 +168,11 @@ def generate_invite_token() -> str:
 
 def make_default_tenant_state() -> Dict[str, object]:
   return {
-    "users": [
-      User(id=1, name="John"),
-      User(id=2, name="Mary"),
-    ],
+    "users": [],
     "outs": [],
     "fixed": [],
     "receipts": [],
-    "next_id": 3,
+    "next_id": 1,
     "next_out_id": 1,
     "next_fixed_id": 1,
     "next_receipt_id": 1,
@@ -156,6 +229,9 @@ def require_auth(role: Optional[str] = None):
           return jsonify({"message": "Tenant not found."}), 404
 
       g.tenant = tenant
+
+      if not validate_csrf_token():
+        return jsonify({"message": "Invalid or missing CSRF token."}), 403
 
       now = datetime.utcnow()
       last_seen = account.last_active_at
@@ -650,6 +726,7 @@ def api_auth_session():
     "authenticated": True,
     "account": account_payload(account),
   }
+  response["csrf_token"] = generate_csrf_token()
   if tenant:
     response["workspace"] = {"name": tenant.get("name") or f"Dorm #{tenant['id']}"}
     if account.role == "admin":
@@ -658,8 +735,9 @@ def api_auth_session():
 
 
 @app.post("/api/auth/logout")
+@require_auth()
 def api_auth_logout():
-  session.pop("account_id", None)
+  session.clear()
   return ("", 204)
 
 
@@ -704,6 +782,7 @@ def api_auth_login():
   response: Dict[str, object] = {"account": account_payload(account)}
   if account.role == "admin" and tenant:
     response["invite_token"] = tenant.get("invite_token")
+  response["csrf_token"] = generate_csrf_token()
   return jsonify(response)
 
 
@@ -734,6 +813,7 @@ def api_auth_register():
     "invite_token": tenant.get("invite_token"),
     "workspace": {"name": tenant.get("name")},
   }
+  response["csrf_token"] = generate_csrf_token()
   return jsonify(response), 201
 
 
@@ -755,8 +835,13 @@ def api_auth_renter_register():
     return jsonify({"message": "Username already taken."}), 409
 
   account = create_account(username, password, "renter", tenant["id"])
+  tenant_state = tenant["state"]
+  new_user = User(id=tenant_state["next_id"], name=username)
+  tenant_state["next_id"] += 1
+  tenant_state["users"].append(new_user)
+  persist_state()
   session["account_id"] = account.id
-  return jsonify({"account": account_payload(account)}), 201
+  return jsonify({"account": account_payload(account), "csrf_token": generate_csrf_token()}), 201
 
 
 @app.get("/api/auth/invite")
@@ -779,16 +864,20 @@ def build_superadmin_state() -> Dict[str, object]:
   tenant_entries.sort(key=lambda entry: entry["name"].lower())
   admin_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("admin")]
   resident_accounts = [serialise_account_summary(account) for account in iter_accounts_by_role("renter")]
+  feedback_items = [serialise_feedback_entry(entry) for entry in feedback_entries]
+  feedback_items.sort(key=lambda entry: entry.get("created_at", ""), reverse=True)
   stats = {
     "tenant_count": len(tenant_entries),
     "admin_count": len(admin_accounts),
     "resident_count": len(resident_accounts),
+    "feedback_count": len(feedback_items),
   }
   return {
     "tenants": tenant_entries,
     "admins": admin_accounts,
     "residents": resident_accounts,
     "stats": stats,
+    "feedbacks": feedback_items,
   }
 
 
@@ -808,6 +897,8 @@ def purge_tenant(tenant_id: int) -> bool:
   delete_accounts_by(lambda acct: acct.tenant_id == tenant_id)
   tenant_folder = UPLOAD_FOLDER / f"tenant_{tenant_id}"
   shutil.rmtree(tenant_folder, ignore_errors=True)
+  global feedback_entries
+  feedback_entries = [entry for entry in feedback_entries if entry.tenant_id != tenant_id]
   persist_state()
   return True
 
@@ -848,6 +939,58 @@ def api_super_renter_delete(account_id: int):
   accounts.pop(account_id, None)
   persist_state()
   return ("", 204)
+
+
+@app.post("/api/feedback")
+@require_auth()
+def api_feedback_submit():
+  payload = request.get_json(silent=True) or {}
+  message = str(payload.get("message") or "").strip()
+  if not message:
+    return jsonify({"message": "Feedback message is required."}), 400
+  if len(message) > MAX_FEEDBACK_LENGTH:
+    return jsonify({"message": "Feedback message is too long."}), 400
+
+  contact_raw = payload.get("contact")
+  contact = str(contact_raw).strip() if isinstance(contact_raw, str) else None
+  if contact and len(contact) > 200:
+    contact = contact[:200]
+
+  context_raw = payload.get("context")
+  context = str(context_raw).strip() if isinstance(context_raw, str) else None
+  if context and len(context) > 200:
+    context = context[:200]
+
+  account = g.account
+  tenant = g.tenant
+  tenant_id = tenant.get("id") if tenant else None
+  workspace_name = None
+  if tenant_id is not None:
+    workspace_name = tenant.get("name") or f"Dorm #{tenant_id}"
+  else:
+    workspace_name = payload.get("workspace_name")
+    if isinstance(workspace_name, str):
+      workspace_name = workspace_name.strip() or None
+    if not workspace_name:
+      workspace_name = "Super Admin"
+
+  global next_feedback_id
+  entry = Feedback(
+    id=next_feedback_id,
+    account_id=account.id,
+    tenant_id=tenant_id,
+    role=account.role,
+    username=account.username,
+    message=message,
+    contact=contact,
+    context=context,
+    workspace_name=workspace_name,
+    created_at=datetime.utcnow(),
+  )
+  next_feedback_id += 1
+  feedback_entries.append(entry)
+  persist_state()
+  return jsonify({"feedback": serialise_feedback_entry(entry)}), 201
 
 
 @app.patch("/api/workspace")
@@ -989,6 +1132,9 @@ def api_receipts_create(user_id: int):
     return jsonify({"message": "No selected file."}), 400
 
   if not allowed_file(file.filename):
+    return jsonify({"message": "File type not allowed."}), 400
+
+  if file.mimetype not in ALLOWED_MIME_TYPES:
     return jsonify({"message": "File type not allowed."}), 400
 
   tenant_state = get_state()
@@ -1355,6 +1501,38 @@ def deserialise_receipt_obj(data: Dict[str, object]) -> Receipt:
   )
 
 
+def serialise_feedback_entry(entry: Feedback) -> Dict[str, object]:
+  return {
+    "id": entry.id,
+    "account_id": entry.account_id,
+    "tenant_id": entry.tenant_id,
+    "role": entry.role,
+    "username": entry.username,
+    "message": entry.message,
+    "contact": entry.contact,
+    "context": entry.context,
+    "workspace_name": entry.workspace_name,
+    "created_at": entry.created_at.isoformat(),
+  }
+
+
+def deserialise_feedback_entry(data: Dict[str, object]) -> Feedback:
+  created_raw = data.get("created_at")
+  created_at = datetime.fromisoformat(created_raw) if isinstance(created_raw, str) else datetime.utcnow()
+  return Feedback(
+    id=int(data["id"]),
+    account_id=int(data.get("account_id", 0)),
+    tenant_id=int(data["tenant_id"]) if data.get("tenant_id") is not None else None,
+    role=str(data.get("role", "")),
+    username=str(data.get("username", "")),
+    message=str(data.get("message", "")),
+    contact=str(data.get("contact")) if data.get("contact") not in (None, "") else None,
+    context=str(data.get("context")) if data.get("context") not in (None, "") else None,
+    workspace_name=str(data.get("workspace_name")) if data.get("workspace_name") not in (None, "") else None,
+    created_at=created_at,
+  )
+
+
 def serialise_state(state: Dict[str, object]) -> Dict[str, object]:
   return {
     "users": [serialise_user_obj(user) for user in state["users"]],
@@ -1406,6 +1584,7 @@ def save_storage() -> None:
   payload = {
     "next_account_id": next_account_id,
     "next_tenant_id": next_tenant_id,
+    "next_feedback_id": next_feedback_id,
     "accounts": [
       {
         "id": account.id,
@@ -1418,18 +1597,21 @@ def save_storage() -> None:
       for account in accounts.values()
     ],
     "tenants": [serialise_tenant_record(tenant) for tenant in tenants.values()],
+    "feedbacks": [serialise_feedback_entry(entry) for entry in feedback_entries],
   }
   with storage_lock, STORAGE_FILE.open("w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
 
 
 def load_storage() -> None:
-  global accounts, tenants, next_account_id, next_tenant_id
+  global accounts, tenants, next_account_id, next_tenant_id, feedback_entries, next_feedback_id
   if not STORAGE_FILE.exists():
     accounts = {}
     tenants = {}
     next_account_id = 1
     next_tenant_id = 1
+    feedback_entries = []
+    next_feedback_id = 1
     return
 
   with STORAGE_FILE.open("r", encoding="utf-8") as handle:
@@ -1437,6 +1619,7 @@ def load_storage() -> None:
 
   next_account_id = int(payload.get("next_account_id", 1))
   next_tenant_id = int(payload.get("next_tenant_id", 1))
+  next_feedback_id = int(payload.get("next_feedback_id", 1))
 
   accounts = {}
   for entry in payload.get("accounts", []):
@@ -1468,6 +1651,8 @@ def load_storage() -> None:
       "name": normalise_workspace_name(entry.get("name"), tenant_id),
     }
     get_tenant_upload_folder(tenant_id)
+
+  feedback_entries = [deserialise_feedback_entry(entry) for entry in payload.get("feedbacks", [])]
 
 
 def persist_state() -> None:
@@ -1542,7 +1727,8 @@ def main():
     exit_code = handle_superadmin_cli(args)
     sys.exit(exit_code)
 
-  app.run(debug=True)
+  debug_enabled = os.environ.get("FLASK_DEBUG", "0").strip().lower() in {"1", "true", "yes"}
+  app.run(debug=debug_enabled)
 
 
 if __name__ == "__main__":

@@ -565,42 +565,75 @@
       </div>
     </header>
 
-    <section class="super-stats" aria-live="polite">
-      <div class="total-grid">
-        <div class="total-card super-card">
-          <span class="label">Dorms</span>
-          <span class="value" id="super-total-tenants">0</span>
+    <nav class="tabs super-tabs" role="tablist" aria-label="Super admin sections">
+      <button class="tab-button active" role="tab" aria-selected="true" aria-controls="super-overview-panel" id="super-tab-overview">
+        Overview
+      </button>
+      <button class="tab-button" role="tab" aria-selected="false" aria-controls="super-feedback-panel" id="super-tab-feedbacks">
+        Feedbacks
+      </button>
+    </nav>
+
+    <section class="tab-panel super-tab-panel" id="super-overview-panel" role="tabpanel" aria-labelledby="super-tab-overview">
+      <section class="super-stats" aria-live="polite">
+        <div class="total-grid">
+          <div class="total-card super-card">
+            <span class="label">Dorms</span>
+            <span class="value" id="super-total-tenants">0</span>
+          </div>
+          <div class="total-card super-card">
+            <span class="label">Admins</span>
+            <span class="value" id="super-total-admins">0</span>
+          </div>
+          <div class="total-card super-card">
+            <span class="label">Residents</span>
+            <span class="value" id="super-total-residents">0</span>
+          </div>
         </div>
-        <div class="total-card super-card">
-          <span class="label">Admins</span>
-          <span class="value" id="super-total-admins">0</span>
+      </section>
+
+      <section class="super-table-section" aria-labelledby="super-tenants-heading">
+        <div class="section-header">
+          <h2 id="super-tenants-heading">Dorm Workspaces</h2>
+          <p class="panel-helper">Review admins and resident accounts per workspace, or purge data when needed.</p>
         </div>
-        <div class="total-card super-card">
-          <span class="label">Residents</span>
-          <span class="value" id="super-total-residents">0</span>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Dorm</th>
+                <th scope="col">Residents</th>
+                <th scope="col">Admins</th>
+                <th scope="col">Last Activity</th>
+                <th scope="col" class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="super-tenant-body"></tbody>
+          </table>
         </div>
-      </div>
+      </section>
     </section>
 
-    <section class="super-table-section" aria-labelledby="super-tenants-heading">
+    <section class="tab-panel super-tab-panel" id="super-feedback-panel" role="tabpanel" aria-labelledby="super-tab-feedbacks" hidden>
       <div class="section-header">
-        <h2 id="super-tenants-heading">Dorm Workspaces</h2>
-        <p class="panel-helper">Review admins and resident accounts per workspace, or purge data when needed.</p>
+        <h2>Feedback</h2>
+        <p class="panel-helper">Read what admins and renters share about their experience.</p>
       </div>
       <div class="table-wrapper">
         <table>
           <thead>
             <tr>
+              <th scope="col">Submitted</th>
               <th scope="col">Dorm</th>
-              <th scope="col">Residents</th>
-              <th scope="col">Admins</th>
-              <th scope="col">Last Activity</th>
-              <th scope="col" class="actions-col">Actions</th>
+              <th scope="col">User</th>
+              <th scope="col">Contact</th>
+              <th scope="col">Message</th>
             </tr>
           </thead>
-          <tbody id="super-tenant-body"></tbody>
+          <tbody id="super-feedback-body"></tbody>
         </table>
       </div>
+      <p class="empty-state" id="super-feedback-empty" hidden>No feedback submitted yet.</p>
     </section>
   </main>
 
@@ -615,6 +648,33 @@
         <button type="button" class="primary" id="invite-overlay-continue">Continue to Dashboard</button>
       </div>
     </div>
+  </div>
+
+  <button type="button" id="feedback-toggle" class="feedback-toggle" aria-haspopup="dialog" aria-expanded="false" hidden>
+    Feedback
+  </button>
+
+  <div id="feedback-panel" class="feedback-panel" role="dialog" aria-modal="false" aria-labelledby="feedback-title" hidden>
+    <form id="feedback-form" class="feedback-form">
+      <div class="feedback-header">
+        <h2 id="feedback-title">Send Feedback</h2>
+        <button type="button" id="feedback-close" class="feedback-close" aria-label="Close feedback form">&times;</button>
+      </div>
+      <p class="feedback-intro">Let the super admin know about bugs, ideas, or anything that would make this tool better.</p>
+      <div class="form-row">
+        <label for="feedback-message">Your message</label>
+        <textarea id="feedback-message" name="message" rows="4" maxlength="4000" required placeholder="Share what’s on your mind…"></textarea>
+        <p class="feedback-counter" id="feedback-counter">0 / 4000</p>
+      </div>
+      <div class="form-row">
+        <label for="feedback-contact">Contact (optional)</label>
+        <input id="feedback-contact" name="contact" type="text" maxlength="200" placeholder="Email or messenger handle">
+      </div>
+      <div class="feedback-actions">
+        <button type="submit" class="primary" id="feedback-submit">Send</button>
+      </div>
+      <p class="feedback-status" id="feedback-status" hidden></p>
+    </form>
   </div>
 
   <template id="user-row-template">

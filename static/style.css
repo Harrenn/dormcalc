@@ -116,6 +116,15 @@ body.modal-open {
   display: none;
 }
 
+.super-tabs {
+  margin-top: 2rem;
+}
+
+.super-tab-panel {
+  display: grid;
+  gap: 2rem;
+}
+
 header .header-row {
   display: flex;
   gap: 1rem;
@@ -201,6 +210,129 @@ header .header-row {
 
 .invite-overlay[hidden] {
   display: none;
+}
+
+.feedback-toggle {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  background: #1d4ed8;
+  color: #fff;
+  padding: 0.75rem 1.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  box-shadow: 0 12px 24px rgba(29, 78, 216, 0.35);
+  z-index: 950;
+}
+
+.feedback-toggle:hover,
+.feedback-toggle:focus {
+  background: #1e40af;
+}
+
+.feedback-toggle[hidden] {
+  display: none;
+}
+
+.feedback-panel {
+  position: fixed;
+  bottom: 5.5rem;
+  right: 1.5rem;
+  width: min(340px, calc(100% - 3rem));
+  background: #fff;
+  border-radius: 1rem;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.25);
+  padding: 1.25rem;
+  z-index: 960;
+}
+
+.feedback-panel[hidden] {
+  display: none;
+}
+
+.feedback-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.feedback-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.feedback-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.feedback-close {
+  background: transparent;
+  color: #475569;
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0.25rem;
+}
+
+.feedback-close:hover,
+.feedback-close:focus {
+  color: #0f172a;
+}
+
+.feedback-intro {
+  margin: 0;
+  color: #475569;
+  font-size: 0.95rem;
+}
+
+.feedback-counter {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: #64748b;
+  text-align: right;
+}
+
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.feedback-status {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.feedback-status.success {
+  color: #16a34a;
+}
+
+.feedback-status.error {
+  color: #dc2626;
+}
+
+.super-feedback-message {
+  white-space: pre-line;
+  color: #0f172a;
+}
+
+.super-feedback-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.super-feedback-meta .feedback-role {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.feedback-context {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #64748b;
 }
 
 .invite-dialog {

@@ -43,10 +43,12 @@ const superState = {
   tenants: [],
   admins: [],
   residents: [],
+  feedbacks: [],
   stats: {
     tenant_count: 0,
     admin_count: 0,
     resident_count: 0,
+    feedback_count: 0,
   },
 };
 
@@ -54,12 +56,15 @@ const resetSuperState = () => {
   superState.tenants = [];
   superState.admins = [];
   superState.residents = [];
+  superState.feedbacks = [];
   superState.stats = {
     tenant_count: 0,
     admin_count: 0,
     resident_count: 0,
+    feedback_count: 0,
   };
   openSuperDetails.clear();
+  currentSuperTab = "overview";
 };
 
 const sessionState = {
@@ -67,6 +72,7 @@ const sessionState = {
   account: null,
   inviteToken: null,
   workspaceName: "",
+  csrfToken: null,
 };
 
 let selectedAwayUserId = null;
@@ -74,6 +80,11 @@ let selectedAbonoUserId = null;
 const openDetails = new Set();
 let workspaceFeedbackTimeoutId = null;
 const openSuperDetails = new Set();
+let currentSuperTab = "overview";
+const feedbackState = {
+  open: false,
+  busy: false,
+};
 
 const getUserById = (id) =>
   appState.users.find((user) => user.id === id) || null;
@@ -99,6 +110,16 @@ const formatDateTime = (value) => {
     hour: "2-digit",
     minute: "2-digit",
   });
+};
+
+const formatRoleLabel = (role) => {
+  if (!role) {
+    return "";
+  }
+  if (role === "superadmin") {
+    return "Super admin";
+  }
+  return `${role.charAt(0).toUpperCase()}${role.slice(1)}`;
 };
 
 const normaliseCurrency = (value) => (Math.abs(value ?? 0) < 0.005 ? 0 : value ?? 0);
@@ -300,8 +321,17 @@ const elements = {
       residents: document.getElementById("super-total-residents"),
     },
     tableBody: document.getElementById("super-tenant-body"),
-    rowTemplate: document.getElementById("super-tenant-row-template"),
-    detailTemplate: document.getElementById("super-tenant-detail-template"),
+    feedbackBody: document.getElementById("super-feedback-body"),
+    feedbackEmpty: document.getElementById("super-feedback-empty"),
+    tabs: {
+      container: document.querySelector("#super-admin-root .super-tabs"),
+      overview: document.getElementById("super-tab-overview"),
+      feedbacks: document.getElementById("super-tab-feedbacks"),
+    },
+    panels: {
+      overview: document.getElementById("super-overview-panel"),
+      feedbacks: document.getElementById("super-feedback-panel"),
+    },
     logout: document.getElementById("super-logout-btn"),
   },
   form: document.getElementById("add-user-form"),
@@ -319,8 +349,19 @@ const elements = {
     abonoMineral: document.getElementById("total-abono-mineral"),
     grand: document.getElementById("grand-total"),
   },
-  tabButtons: Array.from(document.querySelectorAll(".tab-button")),
-  tabPanels: Array.from(document.querySelectorAll(".tab-panel")),
+  tabButtons: Array.from(document.querySelectorAll("#app-root .tabs .tab-button")),
+  tabPanels: Array.from(document.querySelectorAll("#app-root .tab-panel")),
+  feedbackWidget: {
+    toggle: document.getElementById("feedback-toggle"),
+    panel: document.getElementById("feedback-panel"),
+    form: document.getElementById("feedback-form"),
+    messageInput: document.getElementById("feedback-message"),
+    contactInput: document.getElementById("feedback-contact"),
+    submit: document.getElementById("feedback-submit"),
+    status: document.getElementById("feedback-status"),
+    counter: document.getElementById("feedback-counter"),
+    close: document.getElementById("feedback-close"),
+  },
   workspace: {
     form: document.getElementById("workspace-form"),
     nameInput: document.getElementById("workspace-name-input"),
@@ -391,16 +432,36 @@ const parseAmount = (value) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 };
 
+const safeHttpMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+
 const request = async (url, options = {}) => {
-  const { headers = {}, ...rest } = options;
-  const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...headers,
-    },
+  const { headers = {}, body, method, ...rest } = options;
+  const resolvedMethod = (method || "GET").toUpperCase();
+  const finalHeaders = { ...headers };
+
+  if (!(body instanceof FormData) && !finalHeaders["Content-Type"]) {
+    finalHeaders["Content-Type"] = "application/json";
+  }
+
+  if (!safeHttpMethods.has(resolvedMethod) && sessionState.csrfToken) {
+    finalHeaders["X-CSRF-Token"] = sessionState.csrfToken;
+  }
+
+  const fetchOptions = {
     credentials: "include",
+    method: resolvedMethod,
     ...rest,
-  });
+  };
+
+  if (body !== undefined) {
+    fetchOptions.body = body;
+  }
+
+  if (Object.keys(finalHeaders).length > 0) {
+    fetchOptions.headers = finalHeaders;
+  }
+
+  const response = await fetch(url, fetchOptions);
 
   if (!response.ok) {
     let payload = {};
@@ -686,10 +747,7 @@ const hideInviteOverlay = async () => {
 
 const logout = async () => {
   try {
-    await fetch("/api/auth/logout", {
-      method: "POST",
-      credentials: "include",
-    });
+    await request("/api/auth/logout", { method: "POST" });
   } catch (error) {
     console.error("Failed to log out:", error);
   } finally {
@@ -767,6 +825,158 @@ const applyRolePermissions = () => {
   }
 };
 
+const updateFeedbackCounter = () => {
+  const { messageInput, counter } = elements.feedbackWidget;
+  if (!messageInput || !counter) {
+    return;
+  }
+  const length = messageInput.value.length;
+  counter.textContent = `${length} / 4000`;
+};
+
+const setFeedbackStatus = (message, variant = null) => {
+  const { status } = elements.feedbackWidget;
+  if (!status) {
+    return;
+  }
+  status.textContent = message || "";
+  status.hidden = !message;
+  status.classList.remove("success", "error");
+  if (message && variant) {
+    status.classList.add(variant);
+  }
+};
+
+const resetFeedbackForm = () => {
+  const { form, messageInput, contactInput } = elements.feedbackWidget;
+  if (form) {
+    form.reset();
+  }
+  if (messageInput) {
+    messageInput.value = "";
+  }
+  if (contactInput) {
+    contactInput.value = "";
+  }
+  updateFeedbackCounter();
+};
+
+const toggleFeedbackPanel = (open = null) => {
+  const { toggle, panel, messageInput } = elements.feedbackWidget;
+  if (!toggle || !panel) {
+    return;
+  }
+  const shouldOpen = typeof open === "boolean" ? open : !feedbackState.open;
+  feedbackState.open = shouldOpen;
+  toggle.setAttribute("aria-expanded", String(shouldOpen));
+  panel.hidden = !shouldOpen;
+  if (shouldOpen) {
+    setFeedbackStatus("");
+    if (messageInput) {
+      messageInput.focus();
+    }
+  }
+  if (!shouldOpen) {
+    setFeedbackStatus("");
+  }
+};
+
+const updateFeedbackWidgetVisibility = () => {
+  const { toggle, panel } = elements.feedbackWidget;
+  if (!toggle || !panel) {
+    return;
+  }
+  if (!sessionState.authenticated) {
+    toggle.hidden = true;
+    panel.hidden = true;
+    feedbackState.open = false;
+    feedbackState.busy = false;
+    resetFeedbackForm();
+    setFeedbackStatus("");
+    return;
+  }
+  toggle.hidden = false;
+  panel.hidden = !feedbackState.open;
+  toggle.setAttribute("aria-expanded", String(feedbackState.open));
+};
+
+const buildFeedbackContext = () => {
+  if (!sessionState.authenticated) {
+    return null;
+  }
+  if (sessionState.account?.role === "superadmin") {
+    return `Super admin · ${currentSuperTab}`;
+  }
+  const activeButton = document.querySelector("#app-root .tabs .tab-button.active");
+  if (activeButton) {
+    const label = activeButton.textContent?.trim();
+    if (label) {
+      return `App tab · ${label}`;
+    }
+  }
+  return null;
+};
+
+const submitFeedback = async () => {
+  const { messageInput, contactInput, submit } = elements.feedbackWidget;
+  if (!messageInput) {
+    return;
+  }
+
+  const message = messageInput.value.trim();
+  const contact = contactInput?.value.trim() || "";
+
+  if (!message) {
+    setFeedbackStatus("Please add a short message before sending.", "error");
+    messageInput.focus();
+    return;
+  }
+
+  const payload = { message };
+  if (contact) {
+    payload.contact = contact;
+  }
+  const context = buildFeedbackContext();
+  if (context) {
+    payload.context = context;
+  }
+  if (sessionState.account?.role === "superadmin" && sessionState.workspaceName) {
+    payload.workspace_name = sessionState.workspaceName;
+  }
+
+  feedbackState.busy = true;
+  setFeedbackStatus("Sending feedback…");
+  if (submit) {
+    submit.disabled = true;
+    submit.textContent = "Sending…";
+  }
+
+  try {
+    await request("/api/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setFeedbackStatus("Thanks for the feedback!", "success");
+    resetFeedbackForm();
+    if (sessionState.account?.role === "superadmin") {
+      await loadSuperState();
+    }
+    setTimeout(() => {
+      setFeedbackStatus("");
+      toggleFeedbackPanel(false);
+    }, 2500);
+  } catch (error) {
+    console.error("Failed to submit feedback:", error);
+    setFeedbackStatus(error.message || "Failed to send feedback.", "error");
+  } finally {
+    feedbackState.busy = false;
+    if (submit) {
+      submit.disabled = false;
+      submit.textContent = "Send";
+    }
+  }
+};
+
 const updateAdminInviteCard = () => {
   const { card, link } = elements.adminInvite;
   if (!card || !link) {
@@ -797,10 +1007,14 @@ const updateUIForSession = () => {
   if (elements.superAdmin.root) {
     elements.superAdmin.root.hidden = !authed || !isSuperAdmin;
   }
+  if (isSuperAdmin) {
+    setSuperTab(currentSuperTab);
+  }
   updateUserBar();
   applyRolePermissions();
   updateAdminInviteCard();
   renderWorkspace();
+  updateFeedbackWidgetVisibility();
 
   if (!authed) {
     const defaultView = inviteTokenFromQuery ? "register-renter" : "menu";
@@ -823,11 +1037,13 @@ const refreshSession = async () => {
       sessionState.account = data.account || null;
       sessionState.inviteToken = data.invite_token || null;
       sessionState.workspaceName = data.workspace?.name || "";
+      sessionState.csrfToken = data.csrf_token || null;
     } else {
       sessionState.authenticated = false;
       sessionState.account = null;
       sessionState.inviteToken = null;
       sessionState.workspaceName = "";
+      sessionState.csrfToken = null;
     }
   } catch (error) {
     console.error("Failed to refresh session:", error);
@@ -835,6 +1051,7 @@ const refreshSession = async () => {
     sessionState.account = null;
     sessionState.inviteToken = null;
     sessionState.workspaceName = "";
+    sessionState.csrfToken = null;
   }
 
   if (!sessionState.authenticated || sessionState.account?.role !== "superadmin") {
@@ -902,6 +1119,7 @@ const applySuperState = (data) => {
   superState.tenants = Array.isArray(data?.tenants) ? data.tenants : [];
   superState.admins = Array.isArray(data?.admins) ? data.admins : [];
   superState.residents = Array.isArray(data?.residents) ? data.residents : [];
+  superState.feedbacks = Array.isArray(data?.feedbacks) ? data.feedbacks : [];
   superState.stats = { ...superState.stats, ...(data?.stats ?? {}) };
   const validIds = new Set(superState.tenants.map((tenant) => tenant.id));
   Array.from(openSuperDetails).forEach((id) => {
@@ -1002,11 +1220,15 @@ const uploadReceipt = async (userId, file) => {
   formData.append("file", file);
 
   try {
-    await fetch(`/api/users/${userId}/receipts`, {
+    const options = {
       method: "POST",
       credentials: "include",
       body: formData,
-    }).then((response) => {
+    };
+    if (sessionState.csrfToken) {
+      options.headers = { "X-CSRF-Token": sessionState.csrfToken };
+    }
+    await fetch(`/api/users/${userId}/receipts`, options).then((response) => {
       if (!response.ok) {
         return response.json().then((data) => {
           throw new Error(data.message || "Failed to upload receipt");
@@ -1021,10 +1243,14 @@ const uploadReceipt = async (userId, file) => {
 
 const deleteReceipt = async (userId, receiptId) => {
   try {
-    await fetch(`/api/users/${userId}/receipts/${receiptId}`, {
+    const options = {
       method: "DELETE",
       credentials: "include",
-    }).then((response) => {
+    };
+    if (sessionState.csrfToken) {
+      options.headers = { "X-CSRF-Token": sessionState.csrfToken };
+    }
+    await fetch(`/api/users/${userId}/receipts/${receiptId}`, options).then((response) => {
       if (!response.ok) {
         return response.json().then((data) => {
           throw new Error(data.message || "Failed to delete receipt");
@@ -2173,12 +2399,127 @@ const renderSuperTenants = () => {
   });
 };
 
+const renderSuperFeedbacks = () => {
+  const tbody = elements.superAdmin.feedbackBody;
+  const empty = elements.superAdmin.feedbackEmpty;
+  if (!tbody) {
+    return;
+  }
+
+  tbody.innerHTML = "";
+
+  const feedbackEntries = [...superState.feedbacks];
+  feedbackEntries.sort((a, b) => {
+    const dateA = new Date(a?.created_at ?? 0).getTime();
+    const dateB = new Date(b?.created_at ?? 0).getTime();
+    return dateB - dateA;
+  });
+
+  if (!feedbackEntries.length) {
+    if (empty) {
+      empty.hidden = false;
+    }
+    return;
+  }
+
+  if (empty) {
+    empty.hidden = true;
+  }
+
+  feedbackEntries.forEach((entry) => {
+    const row = document.createElement("tr");
+
+    const createdCell = document.createElement("td");
+    createdCell.textContent = formatDateTime(entry?.created_at);
+    row.appendChild(createdCell);
+
+    const workspaceCell = document.createElement("td");
+    const tenantName = entry?.workspace_name || (entry?.tenant_id ? `Dorm ${entry.tenant_id}` : "—");
+    workspaceCell.textContent = tenantName;
+    row.appendChild(workspaceCell);
+
+    const userCell = document.createElement("td");
+    const meta = document.createElement("div");
+    meta.className = "super-feedback-meta";
+
+    const username = document.createElement("span");
+    username.textContent = entry?.username || "Unknown";
+    meta.appendChild(username);
+
+    const roleLabel = formatRoleLabel(entry?.role);
+    if (roleLabel) {
+      const roleSpan = document.createElement("span");
+      roleSpan.className = "feedback-role";
+      roleSpan.textContent = roleLabel;
+      meta.appendChild(roleSpan);
+    }
+
+    userCell.appendChild(meta);
+    row.appendChild(userCell);
+
+    const contactCell = document.createElement("td");
+    contactCell.textContent = entry?.contact || "—";
+    row.appendChild(contactCell);
+
+    const messageCell = document.createElement("td");
+    const messageBlock = document.createElement("p");
+    messageBlock.className = "super-feedback-message";
+    messageBlock.textContent = entry?.message || "";
+    messageCell.appendChild(messageBlock);
+
+    if (entry?.context) {
+      const contextNote = document.createElement("span");
+      contextNote.className = "feedback-context";
+      contextNote.textContent = `Context: ${entry.context}`;
+      messageCell.appendChild(contextNote);
+    }
+
+    row.appendChild(messageCell);
+    tbody.appendChild(row);
+  });
+};
+
+const setSuperTab = (tabId) => {
+  currentSuperTab = tabId;
+  const config = [
+    {
+      id: "overview",
+      button: elements.superAdmin.tabs.overview,
+      panel: elements.superAdmin.panels.overview,
+    },
+    {
+      id: "feedbacks",
+      button: elements.superAdmin.tabs.feedbacks,
+      panel: elements.superAdmin.panels.feedbacks,
+    },
+  ];
+
+  config.forEach(({ id, button, panel }) => {
+    const selected = id === tabId;
+    if (button) {
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    }
+    if (panel) {
+      panel.hidden = !selected;
+    }
+  });
+};
+
 const renderSuperAdmin = () => {
   if (elements.superAdmin.root?.hidden) {
     return;
   }
+  setSuperTab(currentSuperTab);
   renderSuperStats();
+  const feedbackTab = elements.superAdmin.tabs.feedbacks;
+  if (feedbackTab) {
+    const count = Number(superState.stats?.feedback_count ?? superState.feedbacks.length ?? 0);
+    feedbackTab.textContent = count > 0 ? `Feedbacks (${count})` : "Feedbacks";
+  }
   renderSuperTenants();
+  renderSuperFeedbacks();
 };
 
 const render = () => {
@@ -3002,6 +3343,79 @@ elements.tabButtons.forEach((button) => {
   button.addEventListener("click", () => activateTab(button));
 });
 
+const registerSuperTab = (button, tabId) => {
+  if (!button) {
+    return;
+  }
+  button.addEventListener("click", () => {
+    if (currentSuperTab === tabId) {
+      return;
+    }
+    setSuperTab(tabId);
+    if (tabId === "feedbacks") {
+      renderSuperFeedbacks();
+    }
+  });
+};
+
+registerSuperTab(elements.superAdmin.tabs.overview, "overview");
+registerSuperTab(elements.superAdmin.tabs.feedbacks, "feedbacks");
+
+if (elements.feedbackWidget.toggle) {
+  elements.feedbackWidget.toggle.addEventListener("click", () => {
+    if (feedbackState.busy) {
+      return;
+    }
+    toggleFeedbackPanel();
+  });
+}
+
+if (elements.feedbackWidget.close) {
+  elements.feedbackWidget.close.addEventListener("click", () => {
+    if (!feedbackState.busy) {
+      toggleFeedbackPanel(false);
+    }
+  });
+}
+
+if (elements.feedbackWidget.form) {
+  elements.feedbackWidget.form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!feedbackState.busy) {
+      submitFeedback();
+    }
+  });
+}
+
+if (elements.feedbackWidget.messageInput) {
+  elements.feedbackWidget.messageInput.addEventListener("input", () => {
+    updateFeedbackCounter();
+    setFeedbackStatus("");
+  });
+}
+
+document.addEventListener("click", (event) => {
+  if (!feedbackState.open) {
+    return;
+  }
+  const { panel, toggle } = elements.feedbackWidget;
+  if (!panel || !toggle) {
+    return;
+  }
+  if (panel.contains(event.target) || toggle.contains(event.target)) {
+    return;
+  }
+  if (!feedbackState.busy) {
+    toggleFeedbackPanel(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && feedbackState.open && !feedbackState.busy) {
+    toggleFeedbackPanel(false);
+  }
+});
+
 const syncAdminForm = () => {
   if (!elements.adminForm) {
     return;
@@ -3057,5 +3471,8 @@ const initializeApp = async () => {
     setAuthView("menu", { skipFocus: true });
   }
 };
+
+updateFeedbackCounter();
+updateFeedbackWidgetVisibility();
 
 initializeApp();
